@@ -9,15 +9,45 @@ struct Project<'a> {
     tags:   HashMap<Tag<'a>, u32>,
     /// Stands for 'file system', where the project struct 
     /// stores files and folders with their associates tags.
-    fs:     HashMap<FsItem, Vec<Tag<'a>>>
+    fs:     Option<FsItem>, 
 }
 
+#[derive(Eq, PartialEq, Hash, Debug)]
 enum FsItem {
-    Folder(String, Vec<Box<FsItem>>),
-    File(String),
+    Folder {
+        name: String, 
+        tags: Vec<String>, 
+        children: Vec<Box<FsItem>>
+    },
+    File {
+        name: String, 
+        tags: Vec<String>
+    },
 }
 
 impl FsItem {
+    fn from_dir(path: &Path) -> Option<Self> {
+        let md = path.metadata().ok()?;
+        if !md.is_dir() {
+            return None;
+        }
+
+        let entries = fs::read_dir(path).ok()?;
+
+        let children = entries
+            .into_iter()
+            .flat_map(|e| {
+                Some(Box::new(Self::from_entry(e.ok()?)?))
+            })
+            .collect();
+
+        Some(Self::Folder {
+            name: path.file_name()?.to_str()?.to_owned(), 
+            tags: vec!(),
+            children
+        })
+    }
+
     fn from_entry(entry: DirEntry) -> Option<Self> {
         let md = entry.metadata().ok()?;
 
@@ -25,12 +55,10 @@ impl FsItem {
 
         Some(
             if md.is_file() {
-                Self::File(name)
+                Self::File {name, tags: vec!()}
             }
             else if md.is_dir() {
-                let entries = fs::read_dir(".").expect("IO error: couldn't read from current directory. (Possible permission error?)");
-
-                Self::Folder(name, entries.into_iter().flat_map(|e| Some(Box::new(Self::from_entry(e.ok()?)))).collect())
+                Self::from_dir(&entry.path())? 
             }
             else { return None; }
         )
@@ -65,35 +93,11 @@ fn main() {
             match argv[0] {
                 "a" | "add" => todo!("Implement adding files or folders to project."),
                 "n" | "new" => {
-                    curr_prog = Some(Project { root: PathBuf::from("."), tags: HashMap::new(), fs: HashMap::new() });
-                    curr_prog.unwrap().fs;
+                    curr_prog = Some(Project { root: PathBuf::from("."), tags: HashMap::new(), fs: None });
+                    
+                    curr_prog.unwrap().fs = Some(FsItem::from_dir(&PathBuf::from(".")).unwrap());
 
-                    let entries = fs::read_dir(".").expect("IO error: couldn't read from current directory. (Possible permission error?)");
-
-                    let files: Vec<String> = entries.filter_map(|entry| {
-                        let entry = entry.ok()?;
-                        let path = entry.path();
-                        let md = entry.metadata().ok()?;
-
-                        if md.is_file() {
-                            path.to_str().map(|s| s.to_string())
-                        }
-                        else { None }
-                    }).collect();
-
-
-                    let folders: Vec<String> = entries.filter_map(|entry| {
-                        let entry = entry.ok()?;
-                        let path = entry.path();
-                        let md = entry.metadata().ok()?;
-
-                        if md.is_dir() {
-                            path.to_str().map(|s| s.to_string())
-                        }
-                        else { None }
-                    }).collect();
-
-                    todo!("Implement creating new project.")
+                    println!("Successfully initialised project in current directory, all files indexed.")
                 }
                 "?" | "help" => print_help(argv[1]), 
                 cmd => unknown_command(cmd)
