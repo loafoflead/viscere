@@ -12,8 +12,8 @@ const SLOWEST_X_SPEED: f32 = 0.2;
 
 pub const CURS_SMALLEST : usize = 1;
 
-pub const TILE_WIDTH    : usize = 30;
-pub const TILE_HEIGHT   : usize = 30;
+pub const TILE_WIDTH    : usize = 10;
+pub const TILE_HEIGHT   : usize = 10;
 
 #[derive(Debug, thiserror::Error)]
 enum GridCheck {
@@ -172,7 +172,6 @@ impl<const W: usize, const H: usize> Grid<W, H> {
     }
 
     pub fn update(&mut self) {
-        let mut dyn_updates = 0usize;
         for mut x in 0..W {
             for mut y in (0..H).rev() {
                 if self.grid[y][x].updated == true { 
@@ -197,7 +196,6 @@ impl<const W: usize, const H: usize> Grid<W, H> {
                                 // dont update if the new pos has a diff x but no x vel or yvel
                                 if !(nx != x && (self.grid[y][x].vel.0 == 0.0 && self.grid[y][x].vel.1 == 0.0)) {
                                     self.update_dynamic_tile(x, y, tile_id);
-                                    dyn_updates += 1;
                                 }
                             }
                             // FIXME: Smoke is **incredibly** slow
@@ -248,7 +246,6 @@ impl<const W: usize, const H: usize> Grid<W, H> {
                 }
             }
         }
-        eprintln!("dyn updates: {dyn_updates}");
     }
 
     fn update_dynamic_tile(&mut self, x: usize, y: usize, tile_id: &crate::TileId) {
