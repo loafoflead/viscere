@@ -6,12 +6,14 @@ mod neighbour;
 pub use neighbour::*;
 
 const G: f32 = 2.0;
-const DECELERATION: f32 = 0.5;
+const DECELERATION_Y: f32 = 1.0;
+const DECELERATION_X: f32 = 0.7;
+const SLOWEST_X_SPEED: f32 = 0.2;
 
 pub const CURS_SMALLEST : usize = 1;
 
-pub const TILE_WIDTH    : usize = 10;
-pub const TILE_HEIGHT   : usize = 10;
+pub const TILE_WIDTH    : usize = 30;
+pub const TILE_HEIGHT   : usize = 30;
 
 #[derive(Debug, thiserror::Error)]
 enum GridCheck {
@@ -48,7 +50,7 @@ impl Vec2 {
     fn line(p1: Vec2, p2: Vec2) -> Vec<(usize, usize)> {
         let mut pts = vec![];
 
-        let n = (p1.dist(&p2) as usize).clamp(1, Self::MAX_LINE_MIDPOINTS);
+        let n = ((p1.dist(&p2) as usize).clamp(1, Self::MAX_LINE_MIDPOINTS) as f32 * 1.0) as usize;
         for s in 0..n {
             let t = if n == 0 { 0.0 } else { s as f32 / n as f32 };
             pts.push(Vec2::lerp(&p1, &p2, t).round());
@@ -100,6 +102,7 @@ impl Tile {
     }
 }
 
+// FIXME: stack overflow when too many elems, move grid to the heap
 pub struct Grid<const W: usize, const H: usize> {
     grid: TileGrid<W, H>,
 }
@@ -248,7 +251,9 @@ impl<const W: usize, const H: usize> Grid<W, H> {
         tile.vel = tile.vel + tile.acc;
 
         // Apply (air resistance?) deceleration
-        // tile.vel = tile.vel * DECELERATION;
+        tile.vel.1 *= DECELERATION_Y;
+        tile.vel.0 *= DECELERATION_X;
+        if tile.vel.0.abs() < SLOWEST_X_SPEED { tile.vel.0 = 0.0; }
 
         //eprintln!("INFO: Tile: {:?}", tile);
         
@@ -257,9 +262,9 @@ impl<const W: usize, const H: usize> Grid<W, H> {
 
         if target == origin { return; }
 
-        //eprintln!("INFO: target: {:?}, origin: {:?}", target, origin);
         let mut nx = x; let mut ny = y;
         let tot_steps = Vec2::line(origin, target).iter().count();
+        //eprintln!("INFO: target: {:?}, origin: {:?}, tot: {tot_steps}", target, origin);
         for (i, (ptx, pty)) in Vec2::line(origin, target).into_iter().enumerate() {
             if i == 0 { continue; }
             match self.find_free(ptx, pty, &[Neighbour::Ident]) {
@@ -279,8 +284,19 @@ impl<const W: usize, const H: usize> Grid<W, H> {
                         self.swap(x, y, collision_pt.0 as usize, collision_pt.1 as usize);
                         break;
                     }*/
-                    let tile = &mut self.grid[y][x];
-                    tile.vel = Vec2::ZERO;
+
+                    if self.grid[y][x].vel.1 != 0.0 {
+                        if nx != 0 && !self.get_solidity(nx - 1, ny+1) {
+                            let tile = &mut self.grid[y][x];
+                            tile.vel.0 = -tile.vel.1/2.0;
+                        }
+                        else if !self.get_solidity(nx + 1, ny+1) {
+                            let tile = &mut self.grid[y][x];
+                            tile.vel.0 = tile.vel.1/2.0;
+                        }
+                        let tile = &mut self.grid[y][x];
+                        tile.vel.1 = 0.0;
+                    }
 
                     break;
                 }
