@@ -1,145 +1,271 @@
-use std::{io, collections::HashMap, path::{Path, PathBuf}, fs::{Metadata, self, DirEntry}};
+use sdl2::pixels::Color;
+use sdl2::event::Event;
+use sdl2::keyboard::Keycode;
+use sdl2::render::Texture;
+use sdl2::render::TextureQuery;
+use sdl2::rect::Rect;
 
-type Tag<'a> = &'a str;
+use std::time::Duration;
 
-struct Project<'a> {
-    /// The where the files are stored
-    root:   PathBuf,
-    /// Map of tags correlated to their quantity ()
-    tags:   HashMap<Tag<'a>, u32>,
-    /// Stands for 'file system', where the project struct 
-    /// stores files and folders with their associates tags.
-    fs:     Option<FsItem>, 
+mod grid;
+use grid::*;
+
+const WINDOW_WIDTH      : usize = 800;
+const WINDOW_HEIGHT     : usize = 600;
+
+const CURSOR_COLOUR     : Color = Color::RGB(200, 200, 200);
+const MAX_CURSOR_SIZE   : usize = 10;
+
+const TEXT_COLOUR       : Color = Color::RGBA(255, 255, 255, 255);
+const DEFAULT_FONT      : &str  = "/usr/share/fonts/truetype/lato/Lato-Medium.ttf";
+
+/// Stupid but this is how many frames must pass for the simulation to tick. So 2 means after 2
+/// frames the simulation updates.
+const SIMULATION_FRAME_DELAY    : usize  = 2;
+const FPS                       : u32    = 60;
+
+#[derive(Debug)]
+struct TileId {
+    name: &'static str,
+    // u32 > 0xRR_GG_BB_AA
+    colour      : (u8, u8, u8),
+    gravity     : bool,
+    flammable   : bool,
+    solid       : bool,
+    weight      : f32,
+    sort        : TileIdType,
+    neighbours  : &'static [Neighbour],
 }
 
-#[derive(Eq, PartialEq, Hash, Debug)]
-enum FsItem {
-    Folder {
-        name: String, 
-        tags: Vec<String>, 
-        children: Vec<Box<FsItem>>
-    },
-    File {
-        name: String, 
-        tags: Vec<String>
-    },
-}
-
-impl FsItem {
-    fn from_dir(path: &Path) -> Option<Self> {
-        let md = path.metadata().ok()?;
-        if !md.is_dir() {
-            return None;
+impl TileId {
+    const fn default() -> Self {
+        Self {
+            name: "!ERROR!", 
+            colour: (255, 0, 0),
+            gravity: false,
+            flammable: false,
+            solid: true,
+            weight: 1.0,
+            sort: TileIdType::Static,
+            neighbours: &[],
         }
-
-        let entries = fs::read_dir(path).ok()?;
-
-        let children = entries
-            .into_iter()
-            .flat_map(|e| {
-                Some(Box::new(Self::from_entry(e.ok()?)?))
-            })
-            .collect();
-
-        Some(Self::Folder {
-            name: path.file_name()?.to_str()?.to_owned(), 
-            tags: vec!(),
-            children
-        })
-    }
-
-    fn from_entry(entry: DirEntry) -> Option<Self> {
-        let md = entry.metadata().ok()?;
-
-        let name = entry.path().to_str().map(|s| s.to_string())?;
-
-        Some(
-            if md.is_file() {
-                Self::File {name, tags: vec!()}
-            }
-            else if md.is_dir() {
-                Self::from_dir(&entry.path())? 
-            }
-            else { return None; }
-        )
     }
 }
 
-fn main() {
-    println!("Welcome to viscere. Type 'help' for help.");
 
-    let mut curr_prog: Option<Project> = None;
+
+const AIR_TILE: TileId = TileId {
+    name        : "Air",
+    colour      : (24, 24, 24),
+    gravity     : false,
+    flammable   : false,
+    solid       : false,
+    weight      : 1.0, 
+    sort        : TileIdType::Static,
+    neighbours  : &[],
+};
+
+const AIR           : usize = 0;
+const WOOD          : usize = 1;
+const STONE         : usize = 2;
+const SAND          : usize = 3;
+const GRAVEL        : usize = 4;
+
+const TILES: &[TileId] = { 
+    use Neighbour::*;
+    &[
+        AIR_TILE,
+        TileId { 
+            name: "Wood",
+            colour: (164, 42, 42),
+            flammable: true,
+            ..TileId::default()
+        },
+        TileId {
+            name: "Stone", 
+            colour: (180, 170, 180),
+            ..TileId::default()
+        },
+        TileId {
+            name: "Sand", 
+            colour: (255, 255, 0),
+            gravity: true,
+            sort: TileIdType::Dynamic,
+            neighbours: &[Down, DownLeft, DownRight],
+            ..TileId::default()
+        },
+        TileId {
+            name: "Gravel", 
+            colour: (90, 89, 88),
+            gravity: true,
+            sort: TileIdType::Static,
+            neighbours: &[Down, DownLeft, DownRight],
+            ..TileId::default()
+        },
+        TileId {
+            name: "Smoke", 
+            colour: (244, 234, 250),
+            gravity: true,
+            weight: -1.0,
+            solid: false,
+            sort: TileIdType::Dynamic,
+            neighbours: &[Up, UpLeft, UpRight, Left, Right],
+            ..TileId::default()
+        }
+    ]
+};
+
+type Canvas2 = sdl2::render::Canvas<sdl2::video::Window>;
+
+fn draw_cursor(mut x: usize, mut y: usize, canvas: &mut Canvas2, size: usize) {
+    let rect = if size == 1 {
+        Rect::new(x as i32 * TILE_WIDTH as i32, y as i32 * TILE_HEIGHT as i32, TILE_WIDTH as u32, TILE_HEIGHT as u32)
+    } else {
+        if x.checked_sub(size/2).is_none() { x = size/2; }
+        if y.checked_sub(size/2).is_none() { y = size/2; }
+        Rect::new((x - size/2) as i32 * TILE_WIDTH as i32, (y - size/2) as i32 * TILE_HEIGHT as i32, (TILE_WIDTH * size) as u32, (TILE_HEIGHT*size) as u32)
+    };
+    canvas.set_draw_color(CURSOR_COLOUR);
+    canvas.fill_rect(rect);
+}
+
+fn texture_and_rect_from_str<'a>(ttf_ctx: &'a sdl2::ttf::Sdl2TtfContext, texture_creator: &'a sdl2::render::TextureCreator<sdl2::video::WindowContext>, text: &str, font: &str, font_size: u16, colour: Color) -> (sdl2::render::Texture<'a>, Rect) {
+    let mut font = ttf_ctx.load_font(DEFAULT_FONT, 24).unwrap();
+    font.set_style(sdl2::ttf::FontStyle::BOLD);
+
+    let surface = font
+        .render(text)
+        .blended(TEXT_COLOUR)
+        .map_err(|e| e.to_string()).unwrap();
+    let texture = texture_creator.create_texture_from_surface(&surface).unwrap();
+
+    let TextureQuery { width, height, .. } = texture.query();
+    let target = Rect::new(0, 0, width as u32, height as u32);
+
+    (texture, target)
+}
+
+
+
+
+pub fn main() {
+    let sdl_context = sdl2::init().unwrap();
+    let video_subsystem = sdl_context.video().unwrap();
+    let ttf_ctx = sdl2::ttf::init().map_err(|e| e.to_string()).unwrap();
+
+    let window = video_subsystem.window(":(", WINDOW_WIDTH as u32, WINDOW_HEIGHT as u32)
+        .opengl()
+        .position_centered()
+        .build()
+        .unwrap();
+
+    let mut canvas = window.into_canvas().build().unwrap();
+
+    let texture_creator = canvas.texture_creator();
+
+    // let (texture, target) = texture_and_rect_from_str(&ttf_ctx, &texture_creator, "hello world", DEFAULT_FONT, 24, TEXT_COLOUR);
+        
+    let mut grid = Grid::<{WINDOW_WIDTH / TILE_WIDTH}, {WINDOW_HEIGHT / TILE_HEIGHT}>::new();
+    let mut timer = 0usize;
+
+    // let mut grid: [[TileIndex; WINDOW_WIDTH / TILE_WIDTH]; WINDOW_HEIGHT / TILE_HEIGHT] = ;
+    let mut cur_x = 0;
+    let mut cur_y = 0;
+    let mut cur_tile = 1;
+    let mut cur_size = 2;
+
+    let mut pause = false;
+
+    canvas.set_draw_color(Color::RGB(0, 255, 255));
+    canvas.clear();
+    canvas.present();
     
-    'main: loop {
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
-        let argv = input.trim().split_whitespace().collect::<Vec<_>>();
+    //let texture_creator = canvas.texture_creator();
+    // let mut tex = texture_creator.create_texture_static(None, WINDOW_WIDTH as u32,WINDOW_HEIGHT as u32).unwrap();
 
-        if argv.len() < 1 {
-            println!();
-            continue 'main;
-        }
+    // tex.update(None, &[0u8, 0u8, 255u8, 0u8].repeat(WINDOW_WIDTH * WINDOW_HEIGHT), WINDOW_WIDTH);
 
-        if argv.len() == 1 {
-            match argv[0] {
-                "q" | "quit" => break 'main,
-                "?" | "help" => println!("Commands: {:?}", CMDS),
-                "ls" | "list" => todo!("Implement viewing of current project."),
-                cmd => unknown_command(cmd)
-            }
-        }
+   
+    'running: loop {
+        canvas.set_draw_color(Color::RGB(0x18, 0x18, 0x18));
+        canvas.clear();
+        
+        let mut event_pump = sdl_context.event_pump().unwrap();
 
-        if argv.len() == 2 {
-            match argv[0] {
-                "a" | "add" => todo!("Implement adding files or folders to project."),
-                "n" | "new" => {
-                    curr_prog = Some(Project { root: PathBuf::from("."), tags: HashMap::new(), fs: None });
-                    
-                    curr_prog.unwrap().fs = Some(FsItem::from_dir(&PathBuf::from(".")).unwrap());
-
-                    println!("Successfully initialised project in current directory, all files indexed.")
+        for event in event_pump.poll_iter() {
+            match event {
+                Event::Quit {..} 
+                /*Event::KeyDown { keycode: Some(Keycode::Escape), .. }*/ => {
+                    break 'running
                 }
-                "?" | "help" => print_help(argv[1]), 
-                cmd => unknown_command(cmd)
+                Event::KeyDown { keycode: Some(Keycode::Up), .. } => {
+                    cur_tile += 1;
+                    cur_tile %= TILES.len();
+                }
+                Event::KeyDown { keycode: Some(Keycode::Down), .. } => {
+                    if cur_tile == 0 { cur_tile = TILES.len()-1 }
+                    else { cur_tile -= 1; }
+                }
+                // place single tile
+                Event::KeyDown { keycode: Some(Keycode::Space), .. } => {
+                    grid.set(cur_x, cur_y, cur_tile, cur_size);
+                }
+                Event::KeyDown { keycode: Some(Keycode::R), .. } => {
+                    grid.clear();
+                }
+                Event::KeyDown { keycode: Some(Keycode::U), .. } => {
+                    grid.update();
+                } 
+                Event::KeyDown { keycode: Some(Keycode::P), .. } => {
+                    pause = !pause;
+                }
+                Event::KeyDown { keycode: Some(Keycode::Left), .. } => {
+                    if cur_size == 1 {
+                        cur_size = 0;
+                    }
+                    cur_size += 2;
+                    if cur_size >= MAX_CURSOR_SIZE { cur_size = MAX_CURSOR_SIZE; }
+                }
+                Event::KeyDown { keycode: Some(Keycode::Right), .. } => {
+                    // FIXME: this is total horsehit idfk who came up with this (me)
+                    if cur_size == 1 { cur_size = 3; }
+                    cur_size -= 2;
+                    if cur_size <= 0 { cur_size = 1; }
+                }
+                Event::MouseMotion { x, y, .. } => {
+                    cur_x = x.clamp(0, WINDOW_WIDTH as i32) as usize / TILE_WIDTH;
+                    cur_y = y.clamp(0, WINDOW_HEIGHT as i32) as usize / TILE_HEIGHT;
+                }
+                _ => {}
             }
         }
 
-        if argv.len() == 3 {
-            match argv[0] {
-                "n" | "new" => todo!("Implement creating new project."),
-                cmd => unknown_command(cmd)
-            }
+        let left = event_pump.mouse_state().left();
+        let right = event_pump.mouse_state().right();
+
+        if left {
+            grid.set(cur_x, cur_y, cur_tile, cur_size);
         }
-    }
-}
-
-const HELP: &[&str] = &[
-    "Unknown help option, be sure to type the full name of the command, and not an alias.",
-    "quit:  Quits the program.",
-    "list:  Lists the stats of the current project.",
-    "add:   Adds a file or folder to the current project. Usage: add <file/folder name>",
-    "help:  Displays this message. Usage: help (<command name>)",
-    "new:   Creates a new project with an optionally given root path (default is current path) and mandatory name, forgetting the old one. Usage: new <name> (<root>)",
-];
-
-const CMDS: &[&str] = &[
-    "quit", "list", "add", "help", "new",
-];
-
-fn index_of<T: PartialEq>(haystack: &[T], needle: T) -> Option<usize> {
-    for (i, item) in haystack.into_iter().enumerate() {
-        if *item == needle {
-            return Some(i);
+        else if right {
+            grid.set(cur_x, cur_y, 0, cur_size);
         }
+
+
+        if !pause && timer % SIMULATION_FRAME_DELAY == 0 {
+            grid.update(); 
+        }
+        grid.draw(&mut canvas);
+        draw_cursor(cur_x, cur_y, &mut canvas, cur_size);
+
+        let (mat_texture, mat_target) = texture_and_rect_from_str(&ttf_ctx, &texture_creator, &format!("{}", TILES[cur_tile].name), DEFAULT_FONT, 24, TEXT_COLOUR);
+        canvas.copy(&mat_texture, None, Some(mat_target)).unwrap();
+
+        let (curs_tex, mut curs_targ) = texture_and_rect_from_str(&ttf_ctx, &texture_creator, &format!("Size: {}", cur_size), DEFAULT_FONT, 24, TEXT_COLOUR);
+        curs_targ.x = WINDOW_WIDTH as i32-curs_targ.width() as i32;
+        canvas.copy(&curs_tex, None, Some(curs_targ)).unwrap();
+
+        canvas.present();
+        timer += 1;
+        ::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / FPS));
     }
-    None
-}
-
-fn print_help(cmd: &str) {
-    let idx = index_of(CMDS, cmd).unwrap_or(0);
-    println!("{}", HELP[idx + 1]);
-}
-
-fn unknown_command(cmd: &str) {
-    println!("Unknown command: `{cmd}`");
 }
