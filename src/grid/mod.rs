@@ -156,7 +156,7 @@ impl<const W: usize, const H: usize> Grid<W, H> {
 
         Err(GridCheck::Obstructed.into())
     }
-
+    
     fn find_obstacle_between(&self, x1: usize, y1: usize, x2: usize, y2: usize) -> Result<(usize, usize), GridCheck> {
         todo!()
     }
@@ -172,6 +172,7 @@ impl<const W: usize, const H: usize> Grid<W, H> {
     }
 
     pub fn update(&mut self) {
+        let mut dyn_updates = 0usize;
         for mut x in 0..W {
             for mut y in (0..H).rev() {
                 if self.grid[y][x].updated == true { 
@@ -192,7 +193,13 @@ impl<const W: usize, const H: usize> Grid<W, H> {
                             else {} // do nothing, the block won't move by default
                         }
                         TileIdType::Dynamic => {
-                            self.update_dynamic_tile(x, y, tile_id);
+                            if let Ok(((nx, ny), _)) = self.find_free(x, y, tile_id.neighbours) {
+                                // dont update if the new pos has a diff x but no x vel or yvel
+                                if !(nx != x && (self.grid[y][x].vel.0 == 0.0 && self.grid[y][x].vel.1 == 0.0)) {
+                                    self.update_dynamic_tile(x, y, tile_id);
+                                    dyn_updates += 1;
+                                }
+                            }
                             // FIXME: Smoke is **incredibly** slow
                             /*let tile = &mut self.grid[y][x];
                             tile.acc.1 = G * TILES[tile.index].weight;
@@ -241,6 +248,7 @@ impl<const W: usize, const H: usize> Grid<W, H> {
                 }
             }
         }
+        eprintln!("dyn updates: {dyn_updates}");
     }
 
     fn update_dynamic_tile(&mut self, x: usize, y: usize, tile_id: &crate::TileId) {
