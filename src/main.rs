@@ -1,7 +1,6 @@
 use sdl2::pixels::Color;
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
-use sdl2::render::Texture;
 use sdl2::render::TextureQuery;
 use sdl2::rect::Rect;
 
@@ -17,6 +16,7 @@ const CURSOR_COLOUR     : Color = Color::RGB(200, 200, 200);
 const MAX_CURSOR_SIZE   : usize = 10;
 
 const TEXT_COLOUR       : Color = Color::RGBA(255, 255, 255, 255);
+const DEBUG_DRAW_COLOUR : Color = Color::RGBA(255, 0, 0, 255);
 const DEFAULT_FONT      : &str  = "/usr/share/fonts/truetype/lato/Lato-Medium.ttf";
 
 /// Stupid but this is how many frames must pass for the simulation to tick. So 2 means after 2
@@ -32,7 +32,9 @@ struct TileId {
     gravity     : bool,
     flammable   : bool,
     solid       : bool,
+// FIXME: make weight a substitute for solidity
     weight      : f32,
+    friction    : f32,
     sort        : TileIdType,
     neighbours  : &'static [Neighbour],
 }
@@ -46,6 +48,7 @@ impl TileId {
             flammable: false,
             solid: true,
             weight: 1.0,
+            friction: 1.0,
             sort: TileIdType::Static,
             neighbours: &[],
         }
@@ -61,6 +64,7 @@ const AIR_TILE: TileId = TileId {
     flammable   : false,
     solid       : false,
     weight      : 1.0, 
+    friction    : 0.0,
     sort        : TileIdType::Static,
     neighbours  : &[],
 };
@@ -106,10 +110,20 @@ const TILES: &[TileId] = {
             name: "Smoke", 
             colour: (244, 234, 250),
             gravity: true,
-            weight: -1.0,
+            weight: -0.5,
+            friction: 0.0,
             solid: false,
             sort: TileIdType::Dynamic,
             neighbours: &[Up, UpLeft, UpRight, Left, Right],
+            ..TileId::default()
+        },
+        TileId {
+            name: "Water",
+            colour: (0, 0, 255),
+            gravity: true,
+            weight: 0.8,
+            solid: false,
+            neighbours: &[Down, DownLeft, DownRight, Left, Right],
             ..TileId::default()
         }
     ]
@@ -126,16 +140,16 @@ fn draw_cursor(mut x: usize, mut y: usize, canvas: &mut Canvas2, size: usize) {
         Rect::new((x - size/2) as i32 * TILE_WIDTH as i32, (y - size/2) as i32 * TILE_HEIGHT as i32, (TILE_WIDTH * size) as u32, (TILE_HEIGHT*size) as u32)
     };
     canvas.set_draw_color(CURSOR_COLOUR);
-    canvas.fill_rect(rect);
+    let _ = canvas.fill_rect(rect);
 }
 
 fn texture_and_rect_from_str<'a>(ttf_ctx: &'a sdl2::ttf::Sdl2TtfContext, texture_creator: &'a sdl2::render::TextureCreator<sdl2::video::WindowContext>, text: &str, font: &str, font_size: u16, colour: Color) -> (sdl2::render::Texture<'a>, Rect) {
-    let mut font = ttf_ctx.load_font(DEFAULT_FONT, 24).unwrap();
+    let mut font = ttf_ctx.load_font(font, font_size).unwrap();
     font.set_style(sdl2::ttf::FontStyle::BOLD);
 
     let surface = font
         .render(text)
-        .blended(TEXT_COLOUR)
+        .blended(colour)
         .map_err(|e| e.to_string()).unwrap();
     let texture = texture_creator.create_texture_from_surface(&surface).unwrap();
 
@@ -219,6 +233,18 @@ pub fn main() {
                 Event::KeyDown { keycode: Some(Keycode::P), .. } => {
                     pause = !pause;
                 }
+                Event::KeyDown { keycode: Some(Keycode::D), .. } => {
+                    let (duc, l) = grid.count_dynamic_updates();
+                    eprintln!("INFO: dynamic updates: {}, {:?}", duc, l);
+                    canvas.set_draw_color(DEBUG_DRAW_COLOUR);
+                    for (x, y) in l {
+                        let _ = canvas.fill_rect(Rect::new(x as i32 * TILE_WIDTH as i32, y as i32 * TILE_HEIGHT as i32, TILE_WIDTH as u32, TILE_HEIGHT as u32));
+                    }
+                    canvas.present();
+                    let n = std::io::stdin();
+                    let mut b = String::new();
+                    let _ = n.read_line(&mut b).unwrap();
+                }
                 Event::KeyDown { keycode: Some(Keycode::Left), .. } => {
                     if cur_size == 1 {
                         cur_size = 0;
@@ -264,7 +290,14 @@ pub fn main() {
         curs_targ.x = WINDOW_WIDTH as i32-curs_targ.width() as i32;
         canvas.copy(&curs_tex, None, Some(curs_targ)).unwrap();
 
+        let (curspos_tex, mut curspos_targ) = texture_and_rect_from_str(&ttf_ctx, &texture_creator, &format!("Pos: ({},{})", cur_x, cur_y), DEFAULT_FONT, 24, TEXT_COLOUR);
+        curspos_targ.x = WINDOW_WIDTH as i32-curspos_targ.width() as i32;
+        curspos_targ.y = WINDOW_HEIGHT as i32-curspos_targ.height() as i32;
+        canvas.copy(&curspos_tex, None, Some(curspos_targ)).unwrap();
+
+
         canvas.present();
+
         timer += 1;
         ::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / FPS));
     }

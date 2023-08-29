@@ -1,4 +1,4 @@
-use super::{Canvas2, TILES, WINDOW_WIDTH, WINDOW_HEIGHT};
+use super::{Canvas2, TILES};
 use sdl2::rect::Rect;
 use std::fmt;
 
@@ -16,7 +16,7 @@ pub const TILE_WIDTH    : usize = 10;
 pub const TILE_HEIGHT   : usize = 10;
 
 #[derive(Debug, thiserror::Error)]
-enum GridCheck {
+pub enum GridCheck {
     /// Out of bounds
     OOB,
     Obstructed,
@@ -29,7 +29,7 @@ impl fmt::Display for GridCheck {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Vec2(f32, f32);
+pub struct Vec2(f32, f32);
 
 impl Vec2 {
     pub const ZERO: Vec2 = Vec2(0.0, 0.0);
@@ -43,11 +43,11 @@ impl Vec2 {
         ((r.0 - self.0).powf(2.0) + (r.1 - self.1).powf(2.0)).sqrt() 
     }
 
-    fn round(&self) -> (usize, usize) {
-        (self.0.round() as usize, self.1.round() as usize)
+    fn round(&self) -> (isize, isize) {
+        (self.0.round() as isize, self.1.round() as isize)
     }
 
-    fn line(p1: Vec2, p2: Vec2) -> Vec<(usize, usize)> {
+    fn line(p1: Vec2, p2: Vec2) -> Vec<(isize, isize)> {
         let mut pts = vec![];
 
         let n = ((p1.dist(&p2) as usize).clamp(1, Self::MAX_LINE_MIDPOINTS) as f32 * 1.0) as usize;
@@ -86,7 +86,7 @@ pub enum TileIdType {
 }
 
 #[derive(Clone, Debug)]
-struct Tile {
+pub struct Tile {
     index: TileIndex,
     sort: TileIdType,
     vel: Vec2, 
@@ -110,10 +110,6 @@ pub struct Grid<const W: usize, const H: usize> {
 type TileIndex = usize;
 pub type TileGrid<const W: usize, const H: usize> = [[Tile; W]; H];
 
-fn set_pixel<const N: usize, T>(arr: &mut [T; N], val: T, x: usize, y: usize, w: usize) {
-    arr[y * w + x] = val;
-}
-
 fn lerp(start: f32, end: f32, t: f32) -> f32 {
     start * (1.0 - t) + end * t
 }
@@ -133,36 +129,43 @@ impl<const W: usize, const H: usize> Grid<W, H> {
             for x in 0..W {
                 let rect = Rect::new(x as i32 * TILE_WIDTH as i32, y as i32 * TILE_HEIGHT as i32, TILE_WIDTH as u32, TILE_HEIGHT as u32);
                 canvas.set_draw_color(if TILES.len()-1 >= self.grid[y][x].index { TILES[self.grid[y][x].index].colour } else { (255, 0, 0) });
-                canvas.fill_rect(rect);
+                let _ = canvas.fill_rect(rect);
             }
         }
     }
 
-    fn find_free(&self, x: usize, y: usize, neighbours: &[Neighbour]) -> Result<((usize, usize), bool), GridCheck> {
-        if x >= W-1 || y >= H-1 { return Err(GridCheck::OOB.into()); }
+    fn find_free(&self, x: usize, y: usize, neighbours: &[Neighbour]) -> Result<(usize, usize), GridCheck> {
+        if x >= W || y >= H { return Err(GridCheck::OOB.into()); }
 
+        if neighbours == &[Neighbour::Ident] {
+            return neighbours[0].check_free(&self.grid, x, y);
+        }
+        
+        let mut oob = true;
         for n in neighbours {
             match n.check_free(&self.grid, x, y) {
                 Ok(r) => {
                     if n.components().contains(&Neighbour::Left) || n.components().contains(&Neighbour::Right) {
-                        return Ok((r, true));
+                        return Ok(r);
                     }
-                    else { return Ok((r, false)); }
+                    else { return Ok(r); }
                 }
-                Err(_) => (),
+                Err(GridCheck::OOB) => {
+                    oob &= true;
+                }
+                _ => {
+                    oob &= false;
+                }
             }
             //if let Some(r) = n.check_free(&self.grid, x, y) { return Ok(r) };
         }
 
-        Err(GridCheck::Obstructed.into())
-    }
-    
-    fn find_obstacle_between(&self, x1: usize, y1: usize, x2: usize, y2: usize) -> Result<(usize, usize), GridCheck> {
-        todo!()
-    }
-
-    fn is_free(&self, x: usize, y: usize) -> Option<bool> {
-        Some(!TILES[self.grid[if y < H { y } else { return None }][if x < W { x } else { return None }].index].solid)
+        if oob == true {
+            Err(GridCheck::OOB)
+        }
+        else {
+            Err(GridCheck::Obstructed.into())
+        }
     }
 
     fn swap(&mut self, x1: usize, y1: usize, x2: usize, y2: usize) {
@@ -171,9 +174,29 @@ impl<const W: usize, const H: usize> Grid<W, H> {
         self.grid[y1][x1] = prev;
     }
 
+    pub fn count_dynamic_updates(&self) -> (usize, Vec<(usize, usize)>) {
+        let mut count = 0usize;
+        let mut l = vec!();
+        for x in 0..W {
+            for y in (0..H).rev() {
+                let tile_id = &TILES[self.grid[y][x].index];
+                if let TileIdType::Dynamic = tile_id.sort {
+                    if let Ok((nx, _ny)) = self.find_free(x, y, tile_id.neighbours) {
+                                // dont update if the new pos has a diff x but no x vel or yvel
+                        if !(nx != x && (self.grid[y][x].vel.0 == 0.0 && self.grid[y][x].vel.1 == 0.0)) {
+                            count += 1;
+                            l.push((x, y));
+                        }
+                    }
+                }
+            }
+        }
+        (count, l)
+    }
+
     pub fn update(&mut self) {
-        for mut x in 0..W {
-            for mut y in (0..H).rev() {
+        for x in 0..W {
+            for y in (0..H).rev() {
                 if self.grid[y][x].updated == true { 
                     self.grid[y][x].updated = false;
                     continue; 
@@ -182,7 +205,7 @@ impl<const W: usize, const H: usize> Grid<W, H> {
                 if tile_id.gravity {
                     match tile_id.sort {
                         TileIdType::Static => {
-                            if let Ok(((nx, ny), _)) = self.find_free(x, y, tile_id.neighbours) {
+                            if let Ok((nx, ny)) = self.find_free(x, y, tile_id.neighbours) {
                                 self.swap(x, y, nx, ny);
                                 self.grid[ny][nx].updated = true;
                             }
@@ -192,55 +215,15 @@ impl<const W: usize, const H: usize> Grid<W, H> {
                             else {} // do nothing, the block won't move by default
                         }
                         TileIdType::Dynamic => {
-                            if let Ok(((nx, ny), _)) = self.find_free(x, y, tile_id.neighbours) {
+                            if let Ok((_nx, _ny)) = self.find_free(x, y, tile_id.neighbours) {
                                 // dont update if the new pos has a diff x but no x vel or yvel
-                                if !(nx != x && (self.grid[y][x].vel.0 == 0.0 && self.grid[y][x].vel.1 == 0.0)) {
-                                    self.update_dynamic_tile(x, y, tile_id);
-                                }
+                                //if !(nx != x && (self.grid[y][x].vel.0.abs() <= 1.0 && self.grid[y][x].vel.1 == 0.0)) {
+                                    self.update_dynamic_tile_grid(x, y, tile_id);
+                                //}
                             }
-                            // FIXME: Smoke is **incredibly** slow
-                            /*let tile = &mut self.grid[y][x];
-                            tile.acc.1 = G * TILES[tile.index].weight;
-                            tile.vel.0 *= 0.7;
-                            tile.vel.1 *= 0.7;
-                            if tile.vel.0 < 0.0 && tile.vel.0 > -0.2 { tile.vel.0 = 0.0; }
-                            // FIXME: tiles fly off infinitely but only to the left :,)
-                            tile.vel = tile.vel + tile.acc;
-                            eprintln!("INFO: tile: {:?}", tile);
-                            let posv2 = Vec2(x as f32, y as f32);
-                            let target = posv2 + tile.vel;
-                            'inner_step: for (ptx, pty) in self.line(posv2, target) {
-                                if let Err(GridCheck::OOB) = self.find_free(ptx as usize, pty as usize, [&tile_id.neighbours[..], &[Neighbour::Ident]].concat().as_slice()) {
-                                    self.set(x, y, 0, CURS_SMALLEST);
-                                    break 'inner_step;
-                                }
-                                else if let Err(GridCheck::Obstructed) = self.find_free(ptx as usize, pty as usize, [&tile_id.neighbours[..], &[Neighbour::Ident]].concat().as_slice()) {
-                                    // FIXME: i think it may find obstructed when no obstructed
-                                    // exists
-                                    //eprintln!("INFO: obstructed");
-                                    let tile = &mut self.grid[y][x];
-                                    // tile.acc = Vec2::ZERO;
-                                    // tile.vel = Vec2::ZERO;
-                                    break 'inner_step;
-                                }
-                                else if let Ok((nx, ny)) = self.find_free(ptx as usize, pty as usize, [&[Neighbour::Ident], &tile_id.neighbours[..]].concat().as_slice()) {
-                                    let tile = &mut self.grid[y][x];
-                                    let hit_smth = tile.vel.0 as usize == 0;
-                                    if nx != x && hit_smth && nx > x {
-                                        tile.vel.0 = tile.vel.1/2.0;
-                                        tile.vel.1 = tile.vel.1/2.0;
-                                    }
-                                    else if nx != x && hit_smth && nx < x {
-                                        tile.vel.0 = -tile.vel.1/2.0;
-                                        tile.vel.1 = tile.vel.1/2.0;
-                                    }
-                                    self.swap(x, y, nx as usize, ny as usize);
-                                    y = ny; x = nx;
-                                }
-                                else {
-                                    eprintln!("Uh oh");
-                                }
-                            }*/
+                            else if let Err(GridCheck::OOB) = self.find_free(x, y, tile_id.neighbours) {
+                                self.set(x, y, 0, CURS_SMALLEST);
+                            }
                         }
                     }
                 }
@@ -248,7 +231,7 @@ impl<const W: usize, const H: usize> Grid<W, H> {
         }
     }
 
-    fn update_dynamic_tile(&mut self, x: usize, y: usize, tile_id: &crate::TileId) {
+    fn update_dynamic_tile_grid(&mut self, x: usize, y: usize, tile_id: &crate::TileId) {
         let tile = &mut self.grid[y][x];
 
         // Apply acceleration to velocity
@@ -260,7 +243,70 @@ impl<const W: usize, const H: usize> Grid<W, H> {
         tile.vel.0 *= DECELERATION_X;
         if tile.vel.0.abs() < SLOWEST_X_SPEED { tile.vel.0 = 0.0; }
 
-        //eprintln!("INFO: Tile: {:?}", tile);
+        let origin = Vec2(x as f32, y as f32);
+        let target = origin + tile.vel;
+
+        if target == origin { return; }
+    
+        let mut nx = x; let mut ny = y;
+
+        for (i, (ptx, pty)) in Vec2::line(origin, target).into_iter().enumerate() {
+            if i == 0 { continue; }
+            if ptx < 0 || pty < 0 {
+                self.set(x, y, 0, CURS_SMALLEST);
+                return;
+            }
+            match self.find_free(ptx as usize, pty as usize, [&[Neighbour::Ident], tile_id.neighbours].concat().as_slice()) {
+                Ok((nnx, nny)) => {
+                    // We want to check for every point across this line that the free spot is the
+                    // point we're currently on, which it should be unless we hit a floor/ceiling
+                    // with a free spot adjacent depending on the tile's neighbour rules 
+                    if (nnx, nny) != (ptx as usize, pty as usize) {
+                        // eprintln!("Found alternative tile placement: {:?}, as opposed to {:?}", (nnx, nny), (ptx, pty));
+                        // If they don't match, then the free is adjacent somehow to the point
+                        // along the line. In this case, we will want to place our tile there and
+                        // quit the loop early, to resolve this in a later update stage by keeping
+                        // momentum
+                        // FIXME: do this using recursion instead
+                        self.swap(x, y, nnx, nny);
+                        self.grid[ny][nx].updated = true;
+                        return;
+                    }
+                    nx = nnx; ny = nny;
+                }
+                Err(GridCheck::OOB) => {
+                    self.set(x, y, 0, CURS_SMALLEST);
+                    return;
+                }
+                Err(GridCheck::Obstructed) => {
+                    // Here we can assume that no matter the velocity of the tile, it has no free
+                    // squares to move to, so we will reset it's velocity and set it to the most
+                    // recent free spot. This should only really happen when a single tile falls
+                    // directly into a spot it can't move from, like a grain of sand falling in the
+                    // middle of a three tile solid platform
+                    let tile = &mut self.grid[ny][nx];
+                    tile.vel = Vec2::ZERO;
+                    break;
+                }
+            }
+        }
+        self.swap(x, y, nx, ny);
+        self.grid[ny][nx].updated = true;
+    }
+
+    fn update_dynamic_tile_phys(&mut self, x: usize, y: usize, tile_id: &crate::TileId) {
+        let tile = &mut self.grid[y][x];
+
+        // Apply acceleration to velocity
+        tile.acc = Vec2(0.0, G * tile_id.weight);
+        tile.vel = tile.vel + tile.acc;
+
+        // Apply (air resistance?) deceleration
+        tile.vel.1 *= DECELERATION_Y;
+        tile.vel.0 *= DECELERATION_X;
+        if tile.vel.0.abs() < SLOWEST_X_SPEED { tile.vel.0 = 0.0; }
+
+        // eprintln!("INFO: Dynamic tile update: Tile: {:?}", tile);
         
         let origin = Vec2(x as f32, y as f32);
         let target = origin + tile.vel;
@@ -268,17 +314,21 @@ impl<const W: usize, const H: usize> Grid<W, H> {
         if target == origin { return; }
 
         let mut nx = x; let mut ny = y;
-        let tot_steps = Vec2::line(origin, target).iter().count();
         //eprintln!("INFO: target: {:?}, origin: {:?}, tot: {tot_steps}", target, origin);
         for (i, (ptx, pty)) in Vec2::line(origin, target).into_iter().enumerate() {
             if i == 0 { continue; }
-            match self.find_free(ptx, pty, &[Neighbour::Ident]) {
-                Ok(((f,g), _)) => { nx = f; ny = g; },
+            if ptx < 0 || pty < 0 {
+                self.set(x, y, 0, CURS_SMALLEST);
+                return;
+            }
+            match self.find_free(ptx as usize, pty as usize, &[Neighbour::Ident]) {
+                Ok((f,g)) => { nx = f; ny = g; },
 
                 Err(GridCheck::OOB) => {
                     self.set(x, y, 0, CURS_SMALLEST);
                     return;
                 }
+
                 Err(GridCheck::Obstructed) => {
                     /*if i != 0 {
                         let t = (i-1) as f32 / tot_steps as f32;
@@ -289,6 +339,9 @@ impl<const W: usize, const H: usize> Grid<W, H> {
                         self.swap(x, y, collision_pt.0 as usize, collision_pt.1 as usize);
                         break;
                     }*/
+
+
+                    // Assume a 45° angle for all collisions
 
                     if self.grid[y][x].vel.1 != 0.0 {
                         if nx != 0 && !self.get_solidity(nx - 1, ny+1) {
@@ -308,9 +361,11 @@ impl<const W: usize, const H: usize> Grid<W, H> {
             }
         }
         self.swap(x, y, nx, ny);
+        self.grid[ny][nx].updated = true;
     }
 
     pub fn get_solidity(&self, x: usize, y: usize) -> bool {
+        if x >= W || y >= H { return false; }
         TILES[self.grid[y][x].index].solid  
     }
 

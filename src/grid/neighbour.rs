@@ -30,6 +30,7 @@ impl Neighbour {
         if mx >= W { return Err(GridCheck::OOB.into()) };
         if my >= H { return Err(GridCheck::OOB.into()) };
         let tile = &TILES[grid[my][mx].index];
+        //if grid[my][mx].index == grid[y][x].index { return Err(GridCheck::Obstructed.into()); }
         use Neighbour::*;
         match self {
             Ident | Up | Down | Left | Right | UpLeftSlip | UpRightSlip | DownRightSlip | DownLeftSlip => {
