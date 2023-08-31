@@ -5,6 +5,7 @@ use sdl2::render::TextureQuery;
 use sdl2::rect::Rect;
 
 use std::time::Duration;
+use std::cmp::{max, min};
 
 mod grid;
 use grid::*;
@@ -18,6 +19,13 @@ const MAX_CURSOR_SIZE   : usize = 10;
 const TEXT_COLOUR       : Color = Color::RGBA(255, 255, 255, 255);
 const DEBUG_DRAW_COLOUR : Color = Color::RGBA(255, 0, 0, 255);
 const DEFAULT_FONT      : &str  = "/usr/share/fonts/truetype/lato/Lato-Medium.ttf";
+
+const PLAYER_WIDTH      : u32 = TILE_WIDTH as u32;
+const PLAYER_HEIGHT     : u32 = TILE_WIDTH as u32 * 2u32;
+
+const PLAYER_DECELERATION: f32 = 0.8;
+
+const PLAYER_COLOUR     : Color = Color::RGB(10, 50, 200);
 
 /// Stupid but this is how many frames must pass for the simulation to tick. So 2 means after 2
 /// frames the simulation updates.
@@ -159,8 +167,65 @@ fn texture_and_rect_from_str<'a>(ttf_ctx: &'a sdl2::ttf::Sdl2TtfContext, texture
     (texture, target)
 }
 
+#[derive(Default, Debug)]
+struct Player {
+    pos: Vec2,
+    vel: Vec2,
+    acc: Vec2
+}
 
+impl Player {
+    fn draw(&self, canvas: &mut Canvas2) {
+        let rect = Rect::new(self.pos.0 as i32, self.pos.1 as i32, PLAYER_WIDTH, PLAYER_HEIGHT);
+        canvas.set_draw_color(PLAYER_COLOUR);
+        canvas.fill_rect(rect);
+    }
 
+    fn rect(&self) -> Rect {
+        Rect::new(self.pos.0.ceil() as i32, self.pos.1.ceil() as i32, PLAYER_WIDTH, PLAYER_HEIGHT)
+    }
+
+    fn update<const W: usize, const H: usize>(&mut self, grid: &Grid<W, H>) {
+        self.acc.1 = 2.0;
+        self.vel = self.vel + self.acc;
+        self.vel = self.vel * PLAYER_DECELERATION;
+        self.acc.0 *= PLAYER_DECELERATION;
+
+        self.pos = self.pos + self.vel;
+        if let Some(cols) = grid.get_cols_in_rect(self.rect()) {
+            for col in cols {
+                let player_rect = self.rect();
+                let col_obj_rect = col;
+
+                let Some(intersection) = player_rect.intersection(col_obj_rect) else {continue; };
+
+                //self.vel = Vec2::ZERO;
+                self.pos = self.pos - Vec2(player_rect.w as f32 - intersection.w as f32, intersection.h as f32);
+                self.vel = self.vel - Vec2(player_rect.w as f32 - intersection.w as f32, intersection.h as f32);
+                // self.vel = Vec2(player_rect.x as f32 - intersection.x as f32, player_rect.y as f32 - intersection.y as f32);
+            }
+        }
+        /*if grid.get_solidity(self.pos.0 as usize / TILE_WIDTH, self.pos.1 as usize / TILE_HEIGHT) {
+            let col_obj_rect = Rect::new(self.pos.0 as i32, self.pos.1 as i32, TILE_WIDTH as u32, TILE_HEIGHT as u32);
+            let player_rect = Rect::new(self.pos.0 as i32, self.pos.1 as i32, PLAYER_WIDTH, PLAYER_HEIGHT);
+
+            let nxl = max(player_rect.x, col_obj_rect.x);
+            let nyl = max(player_rect.y + player_rect.h, col_obj_rect.y + col_obj_rect.h);
+            let nxr = min(player_rect.x + player_rect.w, col_obj_rect.x + col_obj_rect.w);
+            let nyr = min(player_rect.y, col_obj_rect.y);
+
+            let intersect_pt_tl = Vec2(nxl as f32, nyr as f32);
+            let intersect_pt_br = Vec2(nxr as f32, nyl as f32);
+
+            self.vel = Vec2::ZERO;
+            self.pos = intersect_pt_tl - Vec2(PLAYER_WIDTH as f32, PLAYER_HEIGHT as f32);
+        }*/
+    }
+
+    fn move_x(&mut self, acc: f32) {
+        self.vel.0 += acc;
+    }
+}
 
 pub fn main() {
     let sdl_context = sdl2::init().unwrap();
@@ -188,6 +253,11 @@ pub fn main() {
     let mut cur_tile = 1;
     let mut cur_size = 2;
 
+    let mut player = Player {
+        pos: Vec2(WINDOW_WIDTH as f32 / 2.0 + 0.25, WINDOW_HEIGHT as f32 / 2.0),
+        ..Default::default()
+    };
+
     let mut pause = false;
 
     canvas.set_draw_color(Color::RGB(0, 255, 255));
@@ -212,6 +282,7 @@ pub fn main() {
                 /*Event::KeyDown { keycode: Some(Keycode::Escape), .. }*/ => {
                     break 'running
                 }
+                
                 Event::KeyDown { keycode: Some(Keycode::Up), .. } => {
                     cur_tile += 1;
                     cur_tile %= TILES.len();
@@ -229,11 +300,12 @@ pub fn main() {
                 }
                 Event::KeyDown { keycode: Some(Keycode::U), .. } => {
                     grid.update();
+                    player.update(&grid);
                 } 
                 Event::KeyDown { keycode: Some(Keycode::P), .. } => {
                     pause = !pause;
                 }
-                Event::KeyDown { keycode: Some(Keycode::D), .. } => {
+                Event::KeyDown { keycode: Some(Keycode::C), .. } => {
                     let (duc, l) = grid.count_dynamic_updates();
                     eprintln!("INFO: dynamic updates: {}, {:?}", duc, l);
                     canvas.set_draw_color(DEBUG_DRAW_COLOUR);
@@ -258,6 +330,17 @@ pub fn main() {
                     cur_size -= 2;
                     if cur_size <= 0 { cur_size = 1; }
                 }
+                Event::KeyDown { keycode: Some(keycode), .. } => {
+                    match keycode {
+                        Keycode::Q | Keycode::A => {
+                            player.move_x(-2.0);
+                        }
+                        Keycode::D => {
+                            player.move_x(2.0);
+                        }
+                        _ => ()
+                    }
+                }
                 Event::MouseMotion { x, y, .. } => {
                     cur_x = x.clamp(0, WINDOW_WIDTH as i32) as usize / TILE_WIDTH;
                     cur_y = y.clamp(0, WINDOW_HEIGHT as i32) as usize / TILE_HEIGHT;
@@ -277,11 +360,30 @@ pub fn main() {
         }
 
 
+        draw_cursor(cur_x, cur_y, &mut canvas, cur_size);
+        grid.draw(&mut canvas);
+        player.draw(&mut canvas);
         if !pause && timer % SIMULATION_FRAME_DELAY == 0 {
             grid.update(); 
+            player.update(&grid);
         }
-        grid.draw(&mut canvas);
-        draw_cursor(cur_x, cur_y, &mut canvas, cur_size);
+        if let Some(rs) = grid.get_cols_in_rect(player.rect()) {
+            for r in rs {
+                canvas.set_draw_color(DEBUG_DRAW_COLOUR);
+                //canvas.fill_rect(r);
+            }
+        }
+        if let Some(cols) = grid.get_cols_in_rect(player.rect()) {
+            for col in cols {
+                let player_rect = player.rect();
+                let col_obj_rect = col;
+
+                let intersection = player_rect.intersection(col_obj_rect).unwrap();
+
+                canvas.set_draw_color(DEBUG_DRAW_COLOUR);
+                canvas.fill_rect(intersection);
+            }
+        }
 
         let (mat_texture, mat_target) = texture_and_rect_from_str(&ttf_ctx, &texture_creator, &format!("{}", TILES[cur_tile].name), DEFAULT_FONT, 24, TEXT_COLOUR);
         canvas.copy(&mat_texture, None, Some(mat_target)).unwrap();

@@ -15,6 +15,8 @@ pub const CURS_SMALLEST : usize = 1;
 pub const TILE_WIDTH    : usize = 10;
 pub const TILE_HEIGHT   : usize = 10;
 
+use std::ops::*;
+
 #[derive(Debug, thiserror::Error)]
 pub enum GridCheck {
     /// Out of bounds
@@ -28,8 +30,8 @@ impl fmt::Display for GridCheck {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Vec2(f32, f32);
+#[derive(Default, Clone, Copy, Debug, PartialEq)]
+pub struct Vec2(pub f32, pub f32);
 
 impl Vec2 {
     pub const ZERO: Vec2 = Vec2(0.0, 0.0);
@@ -65,6 +67,16 @@ impl std::ops::Add<Vec2> for Vec2 {
         Self (
             self.0 + rhs.0,
             self.1 + rhs.1
+        )
+    }
+}
+
+impl std::ops::Sub<Vec2> for Vec2 {
+    type Output = Vec2;
+    fn sub(self, rhs: Vec2) -> Self::Output {
+        Self (
+            self.0 - rhs.0,
+            self.1 - rhs.1
         )
     }
 }
@@ -132,6 +144,31 @@ impl<const W: usize, const H: usize> Grid<W, H> {
                 let _ = canvas.fill_rect(rect);
             }
         }
+    }
+
+    pub fn get_cols_in_rect(&self, rect: Rect) -> Option<Vec<Rect>> {
+        if rect.x < 0 || rect.y < 0 || rect.x as usize / TILE_WIDTH >= W || rect.y as usize / TILE_HEIGHT >= H { return None; }
+
+        let x_range = rect.x as usize / TILE_WIDTH..(rect.x as usize + rect.w as usize + TILE_WIDTH - 1) / TILE_WIDTH;
+        let y_range = rect.y as usize / TILE_HEIGHT..(rect.y as usize + rect.h as usize + TILE_HEIGHT - 1) / TILE_HEIGHT;
+
+        let mut res = vec!();
+
+        for y in y_range {
+            for x in x_range.clone() {
+                if TILES[self.grid[y][x].index].solid {
+                    let rect = Rect::new(
+                        x as i32 * TILE_WIDTH as i32, 
+                        y as i32 * TILE_HEIGHT as i32, 
+                        TILE_WIDTH as u32,
+                        TILE_HEIGHT as u32,
+                    );
+                    res.push(rect);
+                }
+            }
+        }
+
+        Some(res)
     }
 
     fn find_free(&self, x: usize, y: usize, neighbours: &[Neighbour]) -> Result<(usize, usize), GridCheck> {
@@ -203,7 +240,8 @@ impl<const W: usize, const H: usize> Grid<W, H> {
                 }
                 let tile_id = &TILES[self.grid[y][x].index];
                 if tile_id.gravity {
-                    match tile_id.sort {
+                    self.update_static_tile(x, y, tile_id);
+                    /*match tile_id.sort {
                         TileIdType::Static => {
                             if let Ok((nx, ny)) = self.find_free(x, y, tile_id.neighbours) {
                                 self.swap(x, y, nx, ny);
@@ -225,10 +263,21 @@ impl<const W: usize, const H: usize> Grid<W, H> {
                                 self.set(x, y, 0, CURS_SMALLEST);
                             }
                         }
-                    }
+                    }*/
                 }
             }
         }
+    }
+
+    fn update_static_tile(&mut self, x: usize, y: usize, tile_id: &crate::TileId) {
+        if let Ok((nx, ny)) = self.find_free(x, y, tile_id.neighbours) {
+            self.swap(x, y, nx, ny);
+            self.grid[ny][nx].updated = true;
+        }
+        else if let Err(GridCheck::OOB) = self.find_free(x, y, tile_id.neighbours) {
+            self.set(x, y, 0, CURS_SMALLEST);
+        }
+        else {} // do nothing, the block won't move by default
     }
 
     fn update_dynamic_tile_grid(&mut self, x: usize, y: usize, tile_id: &crate::TileId) {
