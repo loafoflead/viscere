@@ -35,6 +35,17 @@ impl Vec2 {
         pts
     }
 
+    pub fn linef32(p1: Vec2, p2: Vec2) -> Vec<Vec2> {
+        let mut pts = vec![];
+
+        let n = ((p1.dist(&p2) as usize).clamp(1, Self::MAX_LINE_MIDPOINTS) as f32 * 1.0) as usize;
+        for s in 0..n {
+            let t = if n == 0 { 0.0 } else { s as f32 / n as f32 };
+            pts.push(Vec2::lerp(&p1, &p2, t));
+        }
+        pts
+    }
+
     pub fn line(p1: Vec2, p2: Vec2) -> Vec<(isize, isize)> {
         let mut pts = vec![];
 

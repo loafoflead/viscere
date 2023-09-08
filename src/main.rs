@@ -30,11 +30,16 @@ const GROUNDED_COLLIDER_WIDTH: u32 = PLAYER_WIDTH;
 const GROUNDED_COLLIDER_HEIGHT: u32 = PLAYER_HEIGHT / 3;
 
 const PLAYER_DECELERATION: f32 = 0.85;
+
+const GROUND_FRICTION: f32 = 0.65;
+const HORIZ_AIR_DECELERATION: f32 = 0.4;
+const VERT_AIR_DECELERATION: f32 = 0.85;
+
 const GRAVITY: f32 = 3.0;
-const PLAYER_HORIZONTAL_MOVEMENT_SPEED: f32 = 2.0;
+const PLAYER_HORIZONTAL_MOVEMENT_SPEED: f32 = 5.0;
 const COLLISION_SUBSTEPS: usize = 5;
 
-const MAXJUMP: f32 = 4.0;
+const MAXJUMP: f32 = 6.0;
 const JUMP_DECR: f32 = 0.5;
 
 const PLAYER_COLOUR     : Color = Color::RGB(10, 50, 200);
@@ -198,7 +203,7 @@ impl Player {
     }
 
     fn is_grounded(&self, grid: &Grid) -> bool {
-        let col_rect = Rect::new(self.pos.0 as i32, self.pos.1 as i32 + PLAYER_HEIGHT as i32, GROUNDED_COLLIDER_WIDTH, GROUNDED_COLLIDER_HEIGHT);
+        let col_rect = Rect::new(self.pos.0 as i32 + PLAYER_WIDTH as i32/8, self.pos.1 as i32 + PLAYER_HEIGHT as i32, GROUNDED_COLLIDER_WIDTH - PLAYER_WIDTH/8, GROUNDED_COLLIDER_HEIGHT);
         if let Some(cols) = grid.get_cols_in_rect(col_rect) {
             if cols.len() > 0 {
                 true
@@ -214,13 +219,20 @@ impl Player {
         let prev = self.pos;
         self.acc.1 = GRAVITY; 
         self.vel = self.vel + self.acc;
-        self.vel = self.vel * PLAYER_DECELERATION;
+        self.vel.1 = self.vel.1 * VERT_AIR_DECELERATION;
+        if self.is_grounded(grid) {
+            self.vel.0 *= GROUND_FRICTION;
+        }
+        else {
+            self.vel.0 *= HORIZ_AIR_DECELERATION;
+        }
         self.acc.0 *= PLAYER_DECELERATION;
 
         self.pos = self.pos + self.vel;
-        'substep: for pt in Vec2::line_substeps(prev, self.pos, COLLISION_SUBSTEPS) {
-            self.pos = Vec2(pt.0 as f32, pt.1 as f32);
+        'substep: for (i, pt) in Vec2::linef32(prev, self.pos).into_iter().enumerate() {
+            self.pos = pt;
             if let Some(cols) = grid.get_cols_in_rect(self.rect()) {
+                let len = cols.len();
                 'subcollisions: for col in cols {
                     let player_rect = self.rect();
                     let col_obj_rect = col;
@@ -254,7 +266,9 @@ impl Player {
                     //self.vel = self.vel - Vec2(player_rect.w as f32 - intersection.w as f32, intersection.h as f32);
                     // self.vel = Vec2(player_rect.x as f32 - intersection.x as f32, player_rect.y as f32 - intersection.y as f32);
                 }
-                break 'substep;
+                if len > 0 && i > 1 {
+                    break 'substep;
+                }
             }
         }
         /*if grid.get_solidity(self.pos.0 as usize / TILE_WIDTH, self.pos.1 as usize / TILE_HEIGHT) {
@@ -311,6 +325,8 @@ pub fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let mut pause = false;
     let mut jump = 0.0;
+    let mut run = 0.0;
+    let mut landed_since_jump = false;
 
     canvas.set_draw_color(Color::RGB(0, 255, 255));
     canvas.clear();
@@ -392,20 +408,44 @@ pub fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let kbd = event_pump.keyboard_state();
 
         if kbd.is_scancode_pressed(Scancode::D) {
-            player.move_x(PLAYER_HORIZONTAL_MOVEMENT_SPEED);
+            player.move_x(run);
         }
-        if kbd.is_scancode_pressed(Scancode::Q) {
-            player.move_x(-PLAYER_HORIZONTAL_MOVEMENT_SPEED);
+        if kbd.is_scancode_pressed(Scancode::A) {
+            player.move_x(-run);
+        }
+
+        if kbd.is_scancode_pressed(Scancode::D) || kbd.is_scancode_pressed(Scancode::A) {
+            if run == 0.0 {
+                run = 2.0;
+            }
+            run = run * 2.5;
+            if run > PLAYER_HORIZONTAL_MOVEMENT_SPEED {
+                run = PLAYER_HORIZONTAL_MOVEMENT_SPEED;
+            }
+        }
+        else {
+            run *= 0.2;
+            if run < 0.001 {
+                run = 0.0;
+            }
         }
 
         if kbd.is_scancode_pressed(Scancode::Space) {
-            if player.is_grounded(&grid) {
+            if player.is_grounded(&grid) && landed_since_jump == true {
                 jump = MAXJUMP;
+                landed_since_jump = false;
+                player.vel.1 -= MAXJUMP + 2.0;
             }
             player.vel.1 -= jump;
-            jump -= JUMP_DECR;
-            if jump < 0.0 {
+            // eprintln!("jump: {}", jump);
+            jump = jump / 2.0;
+            if jump < 0.001 {
                 jump = 0.0;
+            }
+        }
+        else {
+            if player.is_grounded(&grid) {
+                landed_since_jump = true;
             }
         }
 
