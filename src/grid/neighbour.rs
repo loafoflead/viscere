@@ -1,5 +1,5 @@
 use super::TILES;
-use super::{TileGrid, GridCheck};
+use super::{GridResult, Grid};
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Neighbour {
@@ -25,31 +25,32 @@ pub const NOSLIP_NEIGHBOURS: &[Neighbour] = &[Ident, Up, UpLeft, UpRight, Down, 
 pub const ALL_NEIGHBOURS: &[Neighbour] = &[Ident, Up, UpLeft, UpRight, UpRightSlip, UpLeftSlip, Down, DownLeft, DownLeftSlip, DownRight, DownRightSlip, Left, Right];
 
 impl Neighbour {
-    pub fn check_free<const W: usize, const H: usize>(&self, grid: &TileGrid<W, H>, x: usize, y: usize) -> Result<(usize, usize), GridCheck> {
-        let (mx, my) = self.get_npos(x, y).ok_or(GridCheck::OOB)?;
-        if mx >= W { return Err(GridCheck::OOB.into()) };
-        if my >= H { return Err(GridCheck::OOB.into()) };
-        let tile = &TILES[grid[my][mx].index];
-        //if grid[my][mx].index == grid[y][x].index { return Err(GridCheck::Obstructed.into()); }
+    pub fn check_free(&self, grid: &Grid, x: usize, y: usize) -> Result<(usize, usize), GridResult> {
+        let (w, h) = grid.get_wh();
+        let (mx, my) = self.get_npos(x, y).ok_or(GridResult::OOB)?;
+        if mx >= w { return Err(GridResult::OOB.into()) };
+        if my >= h { return Err(GridResult::OOB.into()) };
+        let tile = &TILES[grid[(mx, my)].index];
+        //if grid[my][mx].index == grid[y][x].index { return Err(GridResult::Obstructed.into()); }
         use Neighbour::*;
         match self {
             Ident | Up | Down | Left | Right | UpLeftSlip | UpRightSlip | DownRightSlip | DownLeftSlip => {
                 if !tile.solid { Ok((mx, my)) }
-                else { Err(GridCheck::Obstructed.into()) }
+                else { Err(GridResult::Obstructed.into()) }
             }
             _ => {
-                if tile.solid { Err(GridCheck::Obstructed.into()) }
+                if tile.solid { Err(GridResult::Obstructed.into()) }
                 else { 
                     let mut both_solid = true;
                     for c in self.components() {
-                        let (mmx, mmy) = c.get_npos(x, y).ok_or(GridCheck::OOB)?;
+                        let (mmx, mmy) = c.get_npos(x, y).ok_or(GridResult::OOB)?;
 
-                        if mmx >= W { return Err(GridCheck::OOB.into()) };
-                        if mmy >= H { return Err(GridCheck::OOB.into()) };
-                        let tile = &TILES[grid[mmy][mmx].index];
+                        if mmx >= w { return Err(GridResult::OOB.into()) };
+                        if mmy >= h { return Err(GridResult::OOB.into()) };
+                        let tile = &TILES[grid[(mmx, mmy)].index];
                         both_solid &= tile.solid;
                     }
-                    if both_solid { Err(GridCheck::Obstructed.into()) }
+                    if both_solid { Err(GridResult::Obstructed.into()) }
                     else { Ok((mx, my)) }
                 }
             }

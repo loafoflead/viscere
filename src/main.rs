@@ -1,5 +1,6 @@
 use sdl2::pixels::Color;
 use sdl2::event::Event;
+use sdl2::keyboard::Scancode;
 use sdl2::keyboard::Keycode;
 use sdl2::render::TextureQuery;
 use sdl2::rect::Rect;
@@ -9,6 +10,8 @@ use std::cmp::{max, min};
 
 mod grid;
 use grid::*;
+mod vec2;
+use vec2::*;
 
 const WINDOW_WIDTH      : usize = 800;
 const WINDOW_HEIGHT     : usize = 600;
@@ -23,7 +26,16 @@ const DEFAULT_FONT      : &str  = "/usr/share/fonts/truetype/lato/Lato-Medium.tt
 const PLAYER_WIDTH      : u32 = TILE_WIDTH as u32;
 const PLAYER_HEIGHT     : u32 = TILE_WIDTH as u32 * 2u32;
 
-const PLAYER_DECELERATION: f32 = 0.8;
+const GROUNDED_COLLIDER_WIDTH: u32 = PLAYER_WIDTH;
+const GROUNDED_COLLIDER_HEIGHT: u32 = PLAYER_HEIGHT / 3;
+
+const PLAYER_DECELERATION: f32 = 0.85;
+const GRAVITY: f32 = 3.0;
+const PLAYER_HORIZONTAL_MOVEMENT_SPEED: f32 = 2.0;
+const COLLISION_SUBSTEPS: usize = 5;
+
+const MAXJUMP: f32 = 4.0;
+const JUMP_DECR: f32 = 0.5;
 
 const PLAYER_COLOUR     : Color = Color::RGB(10, 50, 200);
 
@@ -178,31 +190,71 @@ impl Player {
     fn draw(&self, canvas: &mut Canvas2) {
         let rect = Rect::new(self.pos.0 as i32, self.pos.1 as i32, PLAYER_WIDTH, PLAYER_HEIGHT);
         canvas.set_draw_color(PLAYER_COLOUR);
-        canvas.fill_rect(rect);
+        canvas.fill_rect(rect);    
     }
 
     fn rect(&self) -> Rect {
         Rect::new(self.pos.0.ceil() as i32, self.pos.1.ceil() as i32, PLAYER_WIDTH, PLAYER_HEIGHT)
     }
 
-    fn update<const W: usize, const H: usize>(&mut self, grid: &Grid<W, H>) {
-        self.acc.1 = 2.0;
+    fn is_grounded(&self, grid: &Grid) -> bool {
+        let col_rect = Rect::new(self.pos.0 as i32, self.pos.1 as i32 + PLAYER_HEIGHT as i32, GROUNDED_COLLIDER_WIDTH, GROUNDED_COLLIDER_HEIGHT);
+        if let Some(cols) = grid.get_cols_in_rect(col_rect) {
+            if cols.len() > 0 {
+                true
+            }
+            else { false }
+        }
+        else {
+            false
+        }
+    }
+
+    fn update(&mut self, grid: &Grid) {
+        let prev = self.pos;
+        self.acc.1 = GRAVITY; 
         self.vel = self.vel + self.acc;
         self.vel = self.vel * PLAYER_DECELERATION;
         self.acc.0 *= PLAYER_DECELERATION;
 
         self.pos = self.pos + self.vel;
-        if let Some(cols) = grid.get_cols_in_rect(self.rect()) {
-            for col in cols {
-                let player_rect = self.rect();
-                let col_obj_rect = col;
+        'substep: for pt in Vec2::line_substeps(prev, self.pos, COLLISION_SUBSTEPS) {
+            self.pos = Vec2(pt.0 as f32, pt.1 as f32);
+            if let Some(cols) = grid.get_cols_in_rect(self.rect()) {
+                'subcollisions: for col in cols {
+                    let player_rect = self.rect();
+                    let col_obj_rect = col;
 
-                let Some(intersection) = player_rect.intersection(col_obj_rect) else {continue; };
+                    let Some(intersection) = player_rect.intersection(col_obj_rect) else { continue; };
 
-                //self.vel = Vec2::ZERO;
-                self.pos = self.pos - Vec2(player_rect.w as f32 - intersection.w as f32, intersection.h as f32);
-                self.vel = self.vel - Vec2(player_rect.w as f32 - intersection.w as f32, intersection.h as f32);
-                // self.vel = Vec2(player_rect.x as f32 - intersection.x as f32, player_rect.y as f32 - intersection.y as f32);
+                    let pcentre: Vec2 = player_rect.center().into();
+                    let ccentre = col_obj_rect.center().into();
+
+                    let p_to_obj = pcentre - ccentre;
+                    // eprintln!("{:?}", (ccentre - pcentre));
+                    
+                    let (x_part, y_part) = if intersection.w == intersection.h {
+                        let p_to_obj = prev - self.pos;
+
+                        (p_to_obj.0.signum() * intersection.w as f32, p_to_obj.1.signum() * intersection.h as f32)
+                    } else {
+                        let x_part = if intersection.w < intersection.h { p_to_obj.0.signum() * intersection.w as f32 } else { 0.0 };
+                        let y_part = if intersection.h < intersection.w { p_to_obj.1.signum() * intersection.h as f32 } else { 0.0 };
+                        (x_part, y_part)
+                    };
+
+                    self.pos = self.pos + Vec2(x_part, y_part);
+
+                    if intersection.w < intersection.h { self.vel.0 = 0.0; }
+                    if intersection.h < intersection.w { self.vel.1 = 0.0; }
+
+                    // self.pos = self.pos - (pcentre - ccentre).signum() * Vec2(intersection.w as f32, intersection.h as f32);
+                    //self.vel = Vec2::ZERO;
+                    //self.pos = self.pos - Vec2(player_rect.w as f32 - intersection.w as f32, intersection.h as f32);
+                    //self.vel = self.vel - Vec2(player_rect.w as f32 - intersection.w as f32, intersection.h as f32);
+                    // self.vel = Vec2(player_rect.x as f32 - intersection.x as f32, player_rect.y as f32 - intersection.y as f32);
+                }
+                break 'substep;
             }
         }
         /*if grid.get_solidity(self.pos.0 as usize / TILE_WIDTH, self.pos.1 as usize / TILE_HEIGHT) {
@@ -227,24 +279,23 @@ impl Player {
     }
 }
 
-pub fn main() {
-    let sdl_context = sdl2::init().unwrap();
-    let video_subsystem = sdl_context.video().unwrap();
-    let ttf_ctx = sdl2::ttf::init().map_err(|e| e.to_string()).unwrap();
+pub fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let sdl_context = sdl2::init()?;
+    let video_subsystem = sdl_context.video()?;
+    let ttf_ctx = sdl2::ttf::init().map_err(|e| e.to_string())?;
 
     let window = video_subsystem.window(":(", WINDOW_WIDTH as u32, WINDOW_HEIGHT as u32)
         .opengl()
         .position_centered()
-        .build()
-        .unwrap();
+        .build()?;
 
-    let mut canvas = window.into_canvas().build().unwrap();
+    let mut canvas = window.into_canvas().build()?;
 
     let texture_creator = canvas.texture_creator();
 
     // let (texture, target) = texture_and_rect_from_str(&ttf_ctx, &texture_creator, "hello world", DEFAULT_FONT, 24, TEXT_COLOUR);
         
-    let mut grid = Grid::<{WINDOW_WIDTH / TILE_WIDTH}, {WINDOW_HEIGHT / TILE_HEIGHT}>::new();
+    let mut grid = Grid::new(WINDOW_WIDTH / TILE_WIDTH, WINDOW_HEIGHT / TILE_HEIGHT)?;
     let mut timer = 0usize;
 
     // let mut grid: [[TileIndex; WINDOW_WIDTH / TILE_WIDTH]; WINDOW_HEIGHT / TILE_HEIGHT] = ;
@@ -254,11 +305,12 @@ pub fn main() {
     let mut cur_size = 2;
 
     let mut player = Player {
-        pos: Vec2(WINDOW_WIDTH as f32 / 2.0 + 0.25, WINDOW_HEIGHT as f32 / 2.0),
+        pos: Vec2(WINDOW_WIDTH as f32 / 2.0 + 5.0, WINDOW_HEIGHT as f32 / 2.0),
         ..Default::default()
     };
 
     let mut pause = false;
+    let mut jump = 0.0;
 
     canvas.set_draw_color(Color::RGB(0, 255, 255));
     canvas.clear();
@@ -274,7 +326,7 @@ pub fn main() {
         canvas.set_draw_color(Color::RGB(0x18, 0x18, 0x18));
         canvas.clear();
         
-        let mut event_pump = sdl_context.event_pump().unwrap();
+        let mut event_pump = sdl_context.event_pump()?;
 
         for event in event_pump.poll_iter() {
             match event {
@@ -293,29 +345,17 @@ pub fn main() {
                 }
                 // place single tile
                 Event::KeyDown { keycode: Some(Keycode::Space), .. } => {
-                    grid.set(cur_x, cur_y, cur_tile, cur_size);
+                    // grid.set(cur_x, cur_y, cur_tile, cur_size);    
                 }
                 Event::KeyDown { keycode: Some(Keycode::R), .. } => {
                     grid.clear();
                 }
                 Event::KeyDown { keycode: Some(Keycode::U), .. } => {
-                    grid.update();
+                    grid.update()?;
                     player.update(&grid);
                 } 
                 Event::KeyDown { keycode: Some(Keycode::P), .. } => {
                     pause = !pause;
-                }
-                Event::KeyDown { keycode: Some(Keycode::C), .. } => {
-                    let (duc, l) = grid.count_dynamic_updates();
-                    eprintln!("INFO: dynamic updates: {}, {:?}", duc, l);
-                    canvas.set_draw_color(DEBUG_DRAW_COLOUR);
-                    for (x, y) in l {
-                        let _ = canvas.fill_rect(Rect::new(x as i32 * TILE_WIDTH as i32, y as i32 * TILE_HEIGHT as i32, TILE_WIDTH as u32, TILE_HEIGHT as u32));
-                    }
-                    canvas.present();
-                    let n = std::io::stdin();
-                    let mut b = String::new();
-                    let _ = n.read_line(&mut b).unwrap();
                 }
                 Event::KeyDown { keycode: Some(Keycode::Left), .. } => {
                     if cur_size == 1 {
@@ -330,22 +370,42 @@ pub fn main() {
                     cur_size -= 2;
                     if cur_size <= 0 { cur_size = 1; }
                 }
-                Event::KeyDown { keycode: Some(keycode), .. } => {
+                /* Event::KeyDown { keycode: Some(keycode), .. } => {
                     match keycode {
                         Keycode::Q | Keycode::A => {
-                            player.move_x(-2.0);
+                            player.move_x(-9.0);
                         }
                         Keycode::D => {
-                            player.move_x(2.0);
+                            player.move_x(9.0);
                         }
                         _ => ()
                     }
-                }
+                } */
                 Event::MouseMotion { x, y, .. } => {
                     cur_x = x.clamp(0, WINDOW_WIDTH as i32) as usize / TILE_WIDTH;
                     cur_y = y.clamp(0, WINDOW_HEIGHT as i32) as usize / TILE_HEIGHT;
                 }
                 _ => {}
+            }
+        }
+
+        let kbd = event_pump.keyboard_state();
+
+        if kbd.is_scancode_pressed(Scancode::D) {
+            player.move_x(PLAYER_HORIZONTAL_MOVEMENT_SPEED);
+        }
+        if kbd.is_scancode_pressed(Scancode::Q) {
+            player.move_x(-PLAYER_HORIZONTAL_MOVEMENT_SPEED);
+        }
+
+        if kbd.is_scancode_pressed(Scancode::Space) {
+            if player.is_grounded(&grid) {
+                jump = MAXJUMP;
+            }
+            player.vel.1 -= jump;
+            jump -= JUMP_DECR;
+            if jump < 0.0 {
+                jump = 0.0;
             }
         }
 
@@ -364,7 +424,7 @@ pub fn main() {
         grid.draw(&mut canvas);
         player.draw(&mut canvas);
         if !pause && timer % SIMULATION_FRAME_DELAY == 0 {
-            grid.update(); 
+            grid.update()?; 
             player.update(&grid);
         }
         if let Some(rs) = grid.get_cols_in_rect(player.rect()) {
@@ -386,16 +446,16 @@ pub fn main() {
         }
 
         let (mat_texture, mat_target) = texture_and_rect_from_str(&ttf_ctx, &texture_creator, &format!("{}", TILES[cur_tile].name), DEFAULT_FONT, 24, TEXT_COLOUR);
-        canvas.copy(&mat_texture, None, Some(mat_target)).unwrap();
+        canvas.copy(&mat_texture, None, Some(mat_target))?;
 
         let (curs_tex, mut curs_targ) = texture_and_rect_from_str(&ttf_ctx, &texture_creator, &format!("Size: {}", cur_size), DEFAULT_FONT, 24, TEXT_COLOUR);
         curs_targ.x = WINDOW_WIDTH as i32-curs_targ.width() as i32;
-        canvas.copy(&curs_tex, None, Some(curs_targ)).unwrap();
+        canvas.copy(&curs_tex, None, Some(curs_targ))?;
 
         let (curspos_tex, mut curspos_targ) = texture_and_rect_from_str(&ttf_ctx, &texture_creator, &format!("Pos: ({},{})", cur_x, cur_y), DEFAULT_FONT, 24, TEXT_COLOUR);
         curspos_targ.x = WINDOW_WIDTH as i32-curspos_targ.width() as i32;
         curspos_targ.y = WINDOW_HEIGHT as i32-curspos_targ.height() as i32;
-        canvas.copy(&curspos_tex, None, Some(curspos_targ)).unwrap();
+        canvas.copy(&curspos_tex, None, Some(curspos_targ))?;
 
 
         canvas.present();
@@ -403,4 +463,5 @@ pub fn main() {
         timer += 1;
         ::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / FPS));
     }
+    Ok(())
 }
