@@ -6,12 +6,13 @@ use sdl2::render::TextureQuery;
 use sdl2::rect::Rect;
 
 use std::time::Duration;
-use std::cmp::{max, min};
 
 mod grid;
 use grid::*;
 mod vec2;
 use vec2::*;
+mod player;
+use player::*;
 
 const WINDOW_WIDTH      : usize = 800;
 const WINDOW_HEIGHT     : usize = 600;
@@ -23,26 +24,6 @@ const TEXT_COLOUR       : Color = Color::RGBA(255, 255, 255, 255);
 const DEBUG_DRAW_COLOUR : Color = Color::RGBA(255, 0, 0, 255);
 const DEFAULT_FONT      : &str  = "/usr/share/fonts/truetype/lato/Lato-Medium.ttf";
 
-const PLAYER_WIDTH      : u32 = TILE_WIDTH as u32;
-const PLAYER_HEIGHT     : u32 = TILE_WIDTH as u32 * 2u32;
-
-const GROUNDED_COLLIDER_WIDTH: u32 = PLAYER_WIDTH;
-const GROUNDED_COLLIDER_HEIGHT: u32 = PLAYER_HEIGHT / 3;
-
-const PLAYER_DECELERATION: f32 = 0.85;
-
-const GROUND_FRICTION: f32 = 0.65;
-const HORIZ_AIR_DECELERATION: f32 = 0.4;
-const VERT_AIR_DECELERATION: f32 = 0.85;
-
-const GRAVITY: f32 = 3.0;
-const PLAYER_HORIZONTAL_MOVEMENT_SPEED: f32 = 5.0;
-const COLLISION_SUBSTEPS: usize = 5;
-
-const MAXJUMP: f32 = 6.0;
-const JUMP_DECR: f32 = 0.5;
-
-const PLAYER_COLOUR     : Color = Color::RGB(10, 50, 200);
 
 /// Stupid but this is how many frames must pass for the simulation to tick. So 2 means after 2
 /// frames the simulation updates.
@@ -58,8 +39,6 @@ struct TileId {
     flammable   : bool,
     solid       : bool,
 // FIXME: make weight a substitute for solidity
-    weight      : f32,
-    friction    : f32,
     sort        : TileIdType,
     neighbours  : &'static [Neighbour],
 }
@@ -72,8 +51,6 @@ impl TileId {
             gravity: false,
             flammable: false,
             solid: true,
-            weight: 1.0,
-            friction: 1.0,
             sort: TileIdType::Static,
             neighbours: &[],
         }
@@ -88,17 +65,9 @@ const AIR_TILE: TileId = TileId {
     gravity     : false,
     flammable   : false,
     solid       : false,
-    weight      : 1.0, 
-    friction    : 0.0,
     sort        : TileIdType::Static,
     neighbours  : &[],
 };
-
-const AIR           : usize = 0;
-const WOOD          : usize = 1;
-const STONE         : usize = 2;
-const SAND          : usize = 3;
-const GRAVEL        : usize = 4;
 
 const TILES: &[TileId] = { 
     use Neighbour::*;
@@ -135,8 +104,6 @@ const TILES: &[TileId] = {
             name: "Smoke", 
             colour: (244, 234, 250),
             gravity: true,
-            weight: -0.5,
-            friction: 0.0,
             solid: false,
             sort: TileIdType::Dynamic,
             neighbours: &[Up, UpLeft, UpRight, Left, Right],
@@ -146,7 +113,6 @@ const TILES: &[TileId] = {
             name: "Water",
             colour: (0, 0, 255),
             gravity: true,
-            weight: 0.8,
             solid: false,
             neighbours: &[Down, DownLeft, DownRight, Left, Right],
             ..TileId::default()
@@ -184,114 +150,6 @@ fn texture_and_rect_from_str<'a>(ttf_ctx: &'a sdl2::ttf::Sdl2TtfContext, texture
     (texture, target)
 }
 
-#[derive(Default, Debug)]
-struct Player {
-    pos: Vec2,
-    vel: Vec2,
-    acc: Vec2
-}
-
-impl Player {
-    fn draw(&self, canvas: &mut Canvas2) {
-        let rect = Rect::new(self.pos.0 as i32, self.pos.1 as i32, PLAYER_WIDTH, PLAYER_HEIGHT);
-        canvas.set_draw_color(PLAYER_COLOUR);
-        canvas.fill_rect(rect);    
-    }
-
-    fn rect(&self) -> Rect {
-        Rect::new(self.pos.0.ceil() as i32, self.pos.1.ceil() as i32, PLAYER_WIDTH, PLAYER_HEIGHT)
-    }
-
-    fn is_grounded(&self, grid: &Grid) -> bool {
-        let col_rect = Rect::new(self.pos.0 as i32 + PLAYER_WIDTH as i32/8, self.pos.1 as i32 + PLAYER_HEIGHT as i32, GROUNDED_COLLIDER_WIDTH - PLAYER_WIDTH/8, GROUNDED_COLLIDER_HEIGHT);
-        if let Some(cols) = grid.get_cols_in_rect(col_rect) {
-            if cols.len() > 0 {
-                true
-            }
-            else { false }
-        }
-        else {
-            false
-        }
-    }
-
-    fn update(&mut self, grid: &Grid) {
-        let prev = self.pos;
-        self.acc.1 = GRAVITY; 
-        self.vel = self.vel + self.acc;
-        self.vel.1 = self.vel.1 * VERT_AIR_DECELERATION;
-        if self.is_grounded(grid) {
-            self.vel.0 *= GROUND_FRICTION;
-        }
-        else {
-            self.vel.0 *= HORIZ_AIR_DECELERATION;
-        }
-        self.acc.0 *= PLAYER_DECELERATION;
-
-        self.pos = self.pos + self.vel;
-        'substep: for (i, pt) in Vec2::linef32(prev, self.pos).into_iter().enumerate() {
-            self.pos = pt;
-            if let Some(cols) = grid.get_cols_in_rect(self.rect()) {
-                let len = cols.len();
-                'subcollisions: for col in cols {
-                    let player_rect = self.rect();
-                    let col_obj_rect = col;
-
-                    let Some(intersection) = player_rect.intersection(col_obj_rect) else { continue; };
-
-                    let pcentre: Vec2 = player_rect.center().into();
-                    let ccentre = col_obj_rect.center().into();
-
-                    let p_to_obj = pcentre - ccentre;
-                    // eprintln!("{:?}", (ccentre - pcentre));
-                    
-                    let (x_part, y_part) = if intersection.w == intersection.h {
-                        let p_to_obj = prev - self.pos;
-
-                        (p_to_obj.0.signum() * intersection.w as f32, p_to_obj.1.signum() * intersection.h as f32)
-                    } else {
-                        let x_part = if intersection.w < intersection.h { p_to_obj.0.signum() * intersection.w as f32 } else { 0.0 };
-                        let y_part = if intersection.h < intersection.w { p_to_obj.1.signum() * intersection.h as f32 } else { 0.0 };
-                        (x_part, y_part)
-                    };
-
-                    self.pos = self.pos + Vec2(x_part, y_part);
-
-                    if intersection.w < intersection.h { self.vel.0 = 0.0; }
-                    if intersection.h < intersection.w { self.vel.1 = 0.0; }
-
-                    // self.pos = self.pos - (pcentre - ccentre).signum() * Vec2(intersection.w as f32, intersection.h as f32);
-                    //self.vel = Vec2::ZERO;
-                    //self.pos = self.pos - Vec2(player_rect.w as f32 - intersection.w as f32, intersection.h as f32);
-                    //self.vel = self.vel - Vec2(player_rect.w as f32 - intersection.w as f32, intersection.h as f32);
-                    // self.vel = Vec2(player_rect.x as f32 - intersection.x as f32, player_rect.y as f32 - intersection.y as f32);
-                }
-                if len > 0 && i > 1 {
-                    break 'substep;
-                }
-            }
-        }
-        /*if grid.get_solidity(self.pos.0 as usize / TILE_WIDTH, self.pos.1 as usize / TILE_HEIGHT) {
-            let col_obj_rect = Rect::new(self.pos.0 as i32, self.pos.1 as i32, TILE_WIDTH as u32, TILE_HEIGHT as u32);
-            let player_rect = Rect::new(self.pos.0 as i32, self.pos.1 as i32, PLAYER_WIDTH, PLAYER_HEIGHT);
-
-            let nxl = max(player_rect.x, col_obj_rect.x);
-            let nyl = max(player_rect.y + player_rect.h, col_obj_rect.y + col_obj_rect.h);
-            let nxr = min(player_rect.x + player_rect.w, col_obj_rect.x + col_obj_rect.w);
-            let nyr = min(player_rect.y, col_obj_rect.y);
-
-            let intersect_pt_tl = Vec2(nxl as f32, nyr as f32);
-            let intersect_pt_br = Vec2(nxr as f32, nyl as f32);
-
-            self.vel = Vec2::ZERO;
-            self.pos = intersect_pt_tl - Vec2(PLAYER_WIDTH as f32, PLAYER_HEIGHT as f32);
-        }*/
-    }
-
-    fn move_x(&mut self, acc: f32) {
-        self.vel.0 += acc;
-    }
-}
 
 pub fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let sdl_context = sdl2::init()?;
@@ -318,10 +176,8 @@ pub fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut cur_tile = 1;
     let mut cur_size = 2;
 
-    let mut player = Player {
-        pos: Vec2(WINDOW_WIDTH as f32 / 2.0 + 5.0, WINDOW_HEIGHT as f32 / 2.0),
-        ..Default::default()
-    };
+    let mut player = 
+        Player::new(WINDOW_WIDTH as f32 / 2.0 + 5.0, WINDOW_HEIGHT as f32 / 2.0);
 
     let mut pause = false;
     let mut jump = 0.0;
@@ -365,6 +221,7 @@ pub fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 }
                 Event::KeyDown { keycode: Some(Keycode::R), .. } => {
                     grid.clear();
+                    player.pos = Vec2((WINDOW_WIDTH as f32 / 2.0), (WINDOW_HEIGHT as f32 / 2.0));
                 }
                 Event::KeyDown { keycode: Some(Keycode::U), .. } => {
                     grid.update()?;
@@ -434,9 +291,9 @@ pub fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             if player.is_grounded(&grid) && landed_since_jump == true {
                 jump = MAXJUMP;
                 landed_since_jump = false;
-                player.vel.1 -= MAXJUMP + 2.0;
+                player.move_y(-(MAXJUMP + 2.0));
             }
-            player.vel.1 -= jump;
+            player.move_y(-jump);
             // eprintln!("jump: {}", jump);
             jump = jump / 2.0;
             if jump < 0.001 {
@@ -453,37 +310,21 @@ pub fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let right = event_pump.mouse_state().right();
 
         if left {
-            grid.set(cur_x, cur_y, cur_tile, cur_size);
+            grid.set(cur_x, cur_y, cur_tile, cur_size)?;
         }
         else if right {
-            grid.set(cur_x, cur_y, 0, cur_size);
+            grid.set(cur_x, cur_y, 0, cur_size)?;
         }
 
 
         draw_cursor(cur_x, cur_y, &mut canvas, cur_size);
         grid.draw(&mut canvas);
-        player.draw(&mut canvas);
+        player.draw(&mut canvas)?;
         if !pause && timer % SIMULATION_FRAME_DELAY == 0 {
             grid.update()?; 
             player.update(&grid);
         }
-        if let Some(rs) = grid.get_cols_in_rect(player.rect()) {
-            for r in rs {
-                canvas.set_draw_color(DEBUG_DRAW_COLOUR);
-                //canvas.fill_rect(r);
-            }
-        }
-        if let Some(cols) = grid.get_cols_in_rect(player.rect()) {
-            for col in cols {
-                let player_rect = player.rect();
-                let col_obj_rect = col;
-
-                let intersection = player_rect.intersection(col_obj_rect).unwrap();
-
-                canvas.set_draw_color(DEBUG_DRAW_COLOUR);
-                canvas.fill_rect(intersection);
-            }
-        }
+        
 
         let (mat_texture, mat_target) = texture_and_rect_from_str(&ttf_ctx, &texture_creator, &format!("{}", TILES[cur_tile].name), DEFAULT_FONT, 24, TEXT_COLOUR);
         canvas.copy(&mat_texture, None, Some(mat_target))?;

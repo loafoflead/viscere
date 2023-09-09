@@ -1,14 +1,9 @@
-use super::{Canvas2, TILES, vec2::*};
+use super::{Canvas2, TILES};
 use sdl2::rect::Rect;
 use std::fmt;
 
 mod neighbour;
 pub use neighbour::*;
-
-const G: f32 = 2.0;
-const DECELERATION_Y: f32 = 1.0;
-const DECELERATION_X: f32 = 0.7;
-const SLOWEST_X_SPEED: f32 = 0.2;
 
 pub const CURS_SMALLEST : usize = 1;
 
@@ -17,8 +12,6 @@ pub const TILE_HEIGHT   : usize = 10;
 
 pub const MAX_GRID_WIDTH: usize = 800;
 pub const MAX_GRID_HEIGHT: usize = 600;
-
-use std::ops::*;
 
 pub type Result<T> = ::std::result::Result<T, GridResult>;
 
@@ -206,12 +199,6 @@ impl Grid {
         }
         else {} // do nothing, the block won't move by default
         Ok(())
-    }
-
-    pub fn get_solidity(&self, x: usize, y: usize) -> bool {
-        let (w, h) = self.get_wh();
-        if x >= w || y >= h { return false; }
-        TILES[self[(x, y)].index].solid  
     }
 
     pub fn set(&mut self, mut x: usize, mut y: usize, tile: TileIndex, size: usize) -> Result<()> {
