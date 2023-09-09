@@ -92,7 +92,7 @@ impl Grid {
     }
 
     fn assert_inbounds(&self, x: isize, y: isize) -> Result<()> {
-        if x >= 0 && y >= 0 && (x as usize) < self.width && (y as usize) < self.height {
+        if x >= 0 && y >= 0 && (x.abs() as usize) < self.width && (y.abs()as usize) < self.height {
             Ok(())
         }
         else {
@@ -126,6 +126,7 @@ impl Grid {
 
         for y in y_range {
             for x in x_range.clone() {
+                self.assert_inbounds(x as isize, y as isize).ok()?;
                 if TILES[self[(x, y)].index].solid {
                     let rect = Rect::new(
                         x as i32 * TILE_WIDTH as i32, 
@@ -217,7 +218,7 @@ impl Grid {
         self.assert_inbounds(x as isize, y as isize)?;
         let (w, h) = self.get_wh();
         if size == 1 {
-            self[(y, x)] = Tile::new( tile);
+            self[(x, y)] = Tile::new(tile);
             return Ok(());
         }
 
@@ -227,7 +228,7 @@ impl Grid {
         for y in y-size/2..y+size/2 {
             for x in x-size/2..x+size/2 {
                 self[(x.clamp(0, w-1), y.clamp(0, h-1))] = Tile::new( tile);
-            }
+           }
         }
         Ok(())
     }
