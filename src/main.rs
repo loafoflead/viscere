@@ -1,6 +1,7 @@
 use sdl2::pixels::Color;
 use sdl2::event::Event;
 use sdl2::keyboard::Scancode;
+use sdl2::event::WindowEvent;
 use sdl2::keyboard::Keycode;
 use sdl2::render::TextureQuery;
 use sdl2::rect::Rect;
@@ -8,7 +9,7 @@ use sdl2::rect::Rect;
 use std::time::Duration;
 
 mod grid;
-use grid::*;
+use grid::{Grid, TILE_HEIGHT, TILE_WIDTH, neighbour::*, TileIdType};
 mod vec2;
 use vec2::*;
 mod player;
@@ -120,11 +121,56 @@ const TILES: &[TileId] = {
     ]
 };
 
-type Canvas2 = sdl2::render::Canvas<sdl2::video::Window>;
+pub struct Canvas2{
+    pub canvas: sdl2::render::Canvas<sdl2::video::Window>,
+    pub w: usize, pub h: usize,
+}
+
+impl Canvas2 {
+    pub fn fill_rect(&mut self, rect: Rect) -> Result<(), String> {
+        // let nrect = Rect::new(
+        //     rect.x, rect.y,
+        //     ((rect.width() as f32 / WINDOW_WIDTH as f32) * self.w as f32) as u32, 
+        //     ((rect.height() as f32 / WINDOW_HEIGHT as f32) * self.h as f32) as u32,
+        // );
+
+        let nrect = self.scale_rect(rect);
+
+        self.canvas.fill_rect(nrect)
+    }
+
+    fn scale_rect(&self, rect: Rect) -> Rect {
+        Rect::new(
+            ((rect.x as f64 / WINDOW_WIDTH as f64) * self.w as f64) as i32, 
+            ((rect.y as f64 / WINDOW_HEIGHT as f64) * self.h as f64) as i32,
+            // rect.width(), rect.height()
+            ((rect.w as f64 / WINDOW_WIDTH as f64) * self.w as f64) as u32,
+            ((rect.h as f64 / WINDOW_HEIGHT as f64) * self.h as f64) as u32,
+        )
+    }
+
+    pub fn get_rel_wh(&self) -> (usize, usize) {
+        (((TILE_WIDTH as f64 / WINDOW_WIDTH as f64) * self.w as f64) as usize,
+        ((TILE_HEIGHT as f64 / WINDOW_HEIGHT as f64) * self.h as f64) as usize)
+    }
+
+    pub fn set_draw_color(&mut self, colour: Color) {
+        self.canvas.set_draw_color(colour);
+    }
+
+    pub fn size(&self) -> (usize, usize) {
+        (self.w, self.h)
+    }
+
+    pub fn inner(&mut self) -> &mut sdl2::render::Canvas<sdl2::video::Window> {
+        &mut self.canvas
+    }
+}
 
 fn draw_cursor(mut x: usize, mut y: usize, canvas: &mut Canvas2, size: usize) {
+    // let rect = Rect::new(x as i32 / TILE_WIDTH as i32 * TILE_WIDTH as i32, y as i32 % TILE_HEIGHT as i32, TILE_WIDTH as u32, TILE_WIDTH as u32);
     let rect = if size == 1 {
-        Rect::new(x as i32 * TILE_WIDTH as i32, y as i32 * TILE_HEIGHT as i32, TILE_WIDTH as u32, TILE_HEIGHT as u32)
+        Rect::new(x as i32 / TILE_WIDTH as i32, y as i32 / TILE_HEIGHT as i32, TILE_WIDTH as u32, TILE_HEIGHT as u32)
     } else {
         if x.checked_sub(size/2).is_none() { x = size/2; }
         if y.checked_sub(size/2).is_none() { y = size/2; }
@@ -161,16 +207,19 @@ pub fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .position_centered()
         .build()?;
 
-    let mut canvas = window.into_canvas().build()?;
+    let (w, h) = (window.size().0 as usize, window.size().1 as usize);
 
-    let texture_creator = canvas.texture_creator();
+    let canvas = window.into_canvas().build()?;
+    let mut canvas = Canvas2 { canvas, w, h };
+
+    let texture_creator = canvas.inner().texture_creator();
 
     // let (texture, target) = texture_and_rect_from_str(&ttf_ctx, &texture_creator, "hello world", DEFAULT_FONT, 24, TEXT_COLOUR);
         
     let mut grid = Grid::new(WINDOW_WIDTH / TILE_WIDTH, WINDOW_HEIGHT / TILE_HEIGHT)?;
     let mut timer = 0usize;
 
-    // let mut grid: [[TileIndex; WINDOW_WIDTH / TILE_WIDTH]; WINDOW_HEIGHT / TILE_HEIGHT] = ;
+    // let mut grid: [[TileIndex; width / TILE_WIDTH]; height / TILE_HEIGHT] = ;
     let mut cur_x = 0;
     let mut cur_y = 0;
     let mut cur_tile = 1;
@@ -185,23 +234,32 @@ pub fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut landed_since_jump = false;
 
     canvas.set_draw_color(Color::RGB(0, 255, 255));
-    canvas.clear();
-    canvas.present();
+    canvas.inner().clear();
+    canvas.inner().present();
     
     //let texture_creator = canvas.texture_creator();
-    // let mut tex = texture_creator.create_texture_static(None, WINDOW_WIDTH as u32,WINDOW_HEIGHT as u32).unwrap();
+    // let mut tex = texture_creator.create_texture_static(None, width as u32,height as u32).unwrap();
 
-    // tex.update(None, &[0u8, 0u8, 255u8, 0u8].repeat(WINDOW_WIDTH * WINDOW_HEIGHT), WINDOW_WIDTH);
+    // tex.update(None, &[0u8, 0u8, 255u8, 0u8].repeat(width * height), width);
 
    
     'running: loop {
-        canvas.set_draw_color(Color::RGB(0x18, 0x18, 0x18));
-        canvas.clear();
+        canvas.inner().set_draw_color(Color::RGB(0x18, 0x18, 0x18));
+        canvas.inner().clear();
         
         let mut event_pump = sdl_context.event_pump()?;
 
+        let (tile_width, tile_height) = canvas.get_rel_wh();
+
         for event in event_pump.poll_iter() {
             match event {
+                Event::Window { win_event: WindowEvent::Resized(w, h), .. } => {
+                    canvas.w = w as usize;
+                    canvas.h = h as usize;
+                    // TODO: gotta make some sorta normalisation for all draw calls which
+                    // automagically puts them in the right screen resolution innit
+                }
+
                 Event::Quit {..} 
                 /*Event::KeyDown { keycode: Some(Keycode::Escape), .. }*/ => {
                     break 'running
@@ -221,7 +279,7 @@ pub fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 }
                 Event::KeyDown { keycode: Some(Keycode::R), .. } => {
                     grid.clear();
-                    player.pos = Vec2((WINDOW_WIDTH as f32 / 2.0), (WINDOW_HEIGHT as f32 / 2.0));
+                    player.pos = Vec2(WINDOW_WIDTH as f32 / 2.0, WINDOW_HEIGHT as f32 / 2.0);
                 }
                 Event::KeyDown { keycode: Some(Keycode::U), .. } => {
                     grid.update()?;
@@ -255,8 +313,10 @@ pub fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     }
                 } */
                 Event::MouseMotion { x, y, .. } => {
-                    cur_x = x.clamp(0, WINDOW_WIDTH as i32) as usize / TILE_WIDTH;
-                    cur_y = y.clamp(0, WINDOW_HEIGHT as i32) as usize / TILE_HEIGHT;
+                    cur_x = (x as f32 / canvas.w as f32 * WINDOW_WIDTH as f32) as usize / TILE_WIDTH;
+                    cur_y = (y as f32 / canvas.h as f32 * WINDOW_HEIGHT as f32) as usize / TILE_HEIGHT;
+                    // cur_x = x.clamp(0, canvas.w as i32) as usize;
+                    // cur_y = y.clamp(0, canvas.h as i32) as usize;
                 }
                 _ => {}
             }
@@ -309,33 +369,38 @@ pub fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let left = event_pump.mouse_state().left();
         let right = event_pump.mouse_state().right();
 
+        // don't crash if we fail to place a tile, it doesn't really matter
+        // TODO: make this log instead of crash
         if left {
-            grid.set(cur_x, cur_y, cur_tile, cur_size)?;
+            let _ = grid.set(cur_x, cur_y, cur_tile, cur_size);
         }
         else if right {
-            grid.set(cur_x, cur_y, 0, cur_size)?;
+            let _ = grid.set(cur_x, cur_y, 0, cur_size);
         }
 
 
-        draw_cursor(cur_x, cur_y, &mut canvas, cur_size);
         grid.draw(&mut canvas);
         player.draw(&mut canvas)?;
+        draw_cursor(cur_x, cur_y, &mut canvas, cur_size);
         if !pause && timer % SIMULATION_FRAME_DELAY == 0 {
             grid.update()?; 
             player.update(&grid);
         }
         
+        let (width, height) = canvas.size();
+        
+        let canvas = canvas.inner();
 
         let (mat_texture, mat_target) = texture_and_rect_from_str(&ttf_ctx, &texture_creator, &format!("{}", TILES[cur_tile].name), DEFAULT_FONT, 24, TEXT_COLOUR);
         canvas.copy(&mat_texture, None, Some(mat_target))?;
 
         let (curs_tex, mut curs_targ) = texture_and_rect_from_str(&ttf_ctx, &texture_creator, &format!("Size: {}", cur_size), DEFAULT_FONT, 24, TEXT_COLOUR);
-        curs_targ.x = WINDOW_WIDTH as i32-curs_targ.width() as i32;
+        curs_targ.x = width as i32-curs_targ.width() as i32;
         canvas.copy(&curs_tex, None, Some(curs_targ))?;
 
         let (curspos_tex, mut curspos_targ) = texture_and_rect_from_str(&ttf_ctx, &texture_creator, &format!("Pos: ({},{})", cur_x, cur_y), DEFAULT_FONT, 24, TEXT_COLOUR);
-        curspos_targ.x = WINDOW_WIDTH as i32-curspos_targ.width() as i32;
-        curspos_targ.y = WINDOW_HEIGHT as i32-curspos_targ.height() as i32;
+        curspos_targ.x = width as i32-curspos_targ.width() as i32;
+        curspos_targ.y = height as i32-curspos_targ.height() as i32;
         canvas.copy(&curspos_tex, None, Some(curspos_targ))?;
 
 

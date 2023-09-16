@@ -1,8 +1,8 @@
-use super::{Canvas2, TILES};
+use super::{Canvas2, TILES, WINDOW_HEIGHT, WINDOW_WIDTH};
 use sdl2::rect::Rect;
 use std::fmt;
 
-mod neighbour;
+pub mod neighbour;
 pub use neighbour::*;
 
 pub const CURS_SMALLEST : usize = 1;
@@ -99,10 +99,11 @@ impl Grid {
 
     pub fn draw(&mut self, canvas: &mut Canvas2) {
         let (w, h) = self.get_wh();
+
         for y in 0..h {
             for x in 0..w {
                 let rect = Rect::new(x as i32 * TILE_WIDTH as i32, y as i32 * TILE_HEIGHT as i32, TILE_WIDTH as u32, TILE_HEIGHT as u32);
-                canvas.set_draw_color(if TILES.len()-1 >= self[(x, y)].index { TILES[self[(x, y)].index].colour } else { (255, 0, 0) });
+                canvas.set_draw_color(if TILES.len()-1 >= self[(x, y)].index { TILES[self[(x, y)].index].colour.into() } else { (255, 0, 0).into() });
                 let _ = canvas.fill_rect(rect);
             }
         }
@@ -153,7 +154,8 @@ impl Grid {
                     else { return Ok(r); }
                 }
                 Err(GridResult::OOB) => {
-                    oob &= true;
+                    return Err(GridResult::OOB);
+                    // oob &= true;
                 }
                 _ => {
                     oob &= false;
@@ -177,11 +179,14 @@ impl Grid {
     }
 
     pub fn update(&mut self) -> Result<()> {
+        for t in &mut self.grid {
+            t.updated = false;
+        }
         let (w, h) = self.get_wh();
         for y in 0..h {
             for x in 0..w {
                 let tile_id = &TILES[self[(x, y)].index];
-                if tile_id.gravity {
+                if tile_id.gravity && !self[(x, y)].updated {
                     self.update_static_tile(x, y, &tile_id)?;
                 }
             }
